@@ -5,7 +5,7 @@ from langchain.tools import tool
 from langgraph.graph import StateGraph, MessagesState, END, START
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from typing import TypedDict, Annotated
 from tools import tools
 from IPython.display import Image, display
@@ -18,8 +18,24 @@ google_api_key = os.getenv("GOOGLE_API_KEY")
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
     temperature=0,
-    google_api_key = google_api_key
+    google_api_key = google_api_key,
 )
+
+system_prompt = SystemMessage(content="""You are a financial advisor for startups/MSMEs.
+CORE RESPONSIBILITIES:
+- Calculate financial metrics accurately using tools provided.
+- Provide a computation breakdown for each metric computed.
+- ALWAYS suggest 2-3 actionable improvements after showing calculations.
+- ALWAYS phrase suggestions as "You may want to consider", "You may want to explore", or any other similar phrases. Never directly instruct the user to do something.
+- Use available tools to demonstrate scenarios.
+
+RESPONSE PATTERN:
+1. Direct answer with calculations
+2. Health assessment with clear status
+3. Specific recommended actions
+4. Offer to show detailed scenarios
+                              """
+                              )
 
 tool_node = ToolNode(tools)
 model_with_tools = llm.bind_tools(tools)
@@ -36,8 +52,11 @@ def should_continue(state: MessagesState):
     return END
 
 def call_model(state: MessagesState):
-    # Simply invoke the model with tools and return the response
-    response = model_with_tools.invoke(state["messages"])
+    messages = state['messages']
+    if not messages or not isinstance(messages[0],SystemMessage):
+        messages = [system_prompt] + messages
+        
+    response = model_with_tools.invoke(messages)
     return {"messages": [response]}
 
 # Add nodes for chatbot and tools
@@ -62,7 +81,11 @@ def user_agent_multiturn(queries):
     for query in queries:
         print(f"User: {query}")
         
-        inputs = {"messages": [HumanMessage(content=query)]}
+        enhanced_query = query
+        if any(keyword in query.lower() for keyword in ["runway", "burn", "cash", "expenses"]):
+            enhanced_query += " Please also suggest specific actions I should consider."
+        
+        inputs = {"messages": [HumanMessage(content=enhanced_query)]}
         print("Agent: ", end="", flush=True)
 
         # Stream all messages and collect the final response
@@ -75,5 +98,5 @@ def user_agent_multiturn(queries):
         
         print("\n")
 
-queries = ["What is my current runway?","Can you show the computation breakdown?","What if I spent 50,000 this month?"]
+queries = ["What is my current runway?","Can you show the computation breakdown?","What if I spent 50,000 this month?","What if I spend 10,000 more than my current expenses?"]
 user_agent_multiturn(queries)

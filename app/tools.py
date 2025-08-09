@@ -1,6 +1,6 @@
 from db import get_connection
 from langchain.tools import tool
-
+import math
 def get_onboarding_data():
     """Helper function to retrieve financial data (not a tool)"""
     conn = get_connection()
@@ -36,11 +36,11 @@ def get_financial_summary():
     data = get_onboarding_data()
     
     return f"""Financial Data Retrieved:
-- Product Development: ${data['product_dev_expenses']:,.2f}
-- Manpower: ${data['manpower_expenses']:,.2f}
-- Marketing: ${data['marketing_expenses']:,.2f}
-- Operations: ${data['operations_expenses']:,.2f}
-- Current Cash: ${data['current_cash']:,.2f}"""
+- Product Development: ₱{data['product_dev_expenses']:,.2f}
+- Manpower: ₱{data['manpower_expenses']:,.2f}
+- Marketing: ₱{data['marketing_expenses']:,.2f}
+- Operations: ₱{data['operations_expenses']:,.2f}
+- Current Cash: ₱{data['current_cash']:,.2f}"""
 
 @tool
 def compute_burn_rate():
@@ -57,10 +57,10 @@ def compute_runway(simulated_expense = None):
     if simulated_expense is None:
         burn_rate = (data['product_dev_expenses'] + data['manpower_expenses'] + 
                 data['marketing_expenses'] + data['operations_expenses'])
-        runway = round(data['current_cash'] / burn_rate, 2)
+        runway = math.floor(data['current_cash'] / burn_rate)
     
         return f"Your current runway is {runway} months (₱{data['current_cash']:,.2f} ÷ ₱{burn_rate:,.2f}/month)"
-    runway = round(data['current_cash'] / simulated_expense,2)
+    runway = math.floor(data['current_cash'] / simulated_expense)
     return f"Your current runway is {runway} months (₱{data['current_cash']:,.2f} ÷ ₱{simulated_expense:,.2f}/month)"
 
 tools = [get_financial_summary, compute_burn_rate, compute_runway]
