@@ -6,9 +6,7 @@ from langgraph.graph import StateGraph, MessagesState, END, START
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from typing import TypedDict, Annotated
 from tools import tools
-from IPython.display import Image, display
 import os
 
 load_dotenv()
@@ -24,15 +22,15 @@ llm = ChatGoogleGenerativeAI(
 system_prompt = SystemMessage(content="""You are a financial advisor for startups/MSMEs.
 CORE RESPONSIBILITIES:
 - Calculate financial metrics accurately using tools provided.
-- Provide a computation breakdown for each metric computed.
+- ALWAYS Provide a detailed computation breakdown for each metric computed.
 - ALWAYS suggest 2-3 actionable improvements after showing calculations.
 - ALWAYS phrase suggestions as "You may want to consider", "You may want to explore", or any other similar phrases. Never directly instruct the user to do something.
 - Use available tools to demonstrate scenarios.
 
 RESPONSE PATTERN:
-1. Direct answer with calculations
+1. Direct answer with calculations and computation breakdowns
 2. Health assessment with clear status
-3. Specific recommended actions
+3. Offer to show recommendations
 4. Offer to show detailed scenarios
                               """
                               )
@@ -98,5 +96,5 @@ def user_agent_multiturn(queries):
         
         print("\n")
 
-queries = ["What is my current runway?","Can you show the computation breakdown?","What if I spent 50,000 this month?","What if I spend 10,000 more than my current expenses?"]
+queries = ["What is my burn rate this month?","What is my current runway?","If I spend 50k next month, what should be my revenue to maintain my runway?"]
 user_agent_multiturn(queries)

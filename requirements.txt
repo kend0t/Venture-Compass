@@ -3,5 +3,4 @@ langchain_google_genai
 langchain
 langgraph
 langchain_core
-IPython
 psycopg2
