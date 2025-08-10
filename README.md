@@ -29,7 +29,15 @@ Repository for our BPI DataWave Product
 - new_customers
 - active_customers
 - other_expenses
-            
+
+### .env variable names:
+- GOOGLE_API_KEY
+- DB_USERNAME
+- DB_PASSWORD
+- DB_PORT
+- DB_HOST
+- DB_NAME
+
             
             
             
