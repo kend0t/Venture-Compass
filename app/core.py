@@ -96,5 +96,5 @@ def user_agent_multiturn(queries):
         
         print("\n")
 
-queries = ["What is my burn rate this month?","What is my current runway?","If I spend 50k next month, what should be my revenue to maintain my runway?"]
+queries = ["What is my Customer Lifetime Value"]
 user_agent_multiturn(queries)
