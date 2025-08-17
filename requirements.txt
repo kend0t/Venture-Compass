@@ -4,3 +4,6 @@ langchain
 langgraph
 langchain_core
 psycopg2
+fastapi
+uvicorn
+pydantic
