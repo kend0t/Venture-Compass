@@ -96,11 +96,7 @@ def calculate_customer_churn(monthly_data, onboarding_data):
         new_customers = month['new_customers']
         
         # Calculate churned customers
-        # Logic: Previous Active + New - Churned = Current Active
-        # Therefore: Churned = Previous Active + New - Current Active
         churned_customers = prev_active + new_customers - current_active
-        
-        # Ensure churned customers can't be negative (data integrity check)
         churned_customers = max(0, churned_customers)
         
         # Calculate churn rate (% of customers lost from previous period)
@@ -140,7 +136,39 @@ def calculate_current_cash():
         monthly_cash_flow = month['revenue'] - total_expenses
         current_cash += monthly_cash_flow
     
-    return current_cash, len(monthly_data)  # Return cash and months elapsed
+    return current_cash, len(monthly_data)
+
+def get_current_metrics():
+    """Helper function to get current financial state"""
+    onboarding = get_onboarding_data()
+    monthly_data = get_monthly_financial_data()
+    current_cash, months_elapsed = calculate_current_cash()
+    
+    if monthly_data:
+        latest = monthly_data[-3:] if len(monthly_data) >= 3 else monthly_data
+        avg_revenue = sum(month['revenue'] for month in latest) / len(latest)
+        avg_expenses = sum(
+            month['product_dev_expenses'] + month['manpower_expenses'] + 
+            month['marketing_expenses'] + month['operations_expenses'] + month['other_expenses']
+            for month in latest
+        ) / len(latest)
+        avg_marketing = sum(month['marketing_expenses'] for month in latest) / len(latest)
+        avg_new_customers = sum(month['new_customers'] for month in latest) / len(latest)
+    else:
+        avg_revenue = onboarding['target_revenue']
+        avg_expenses = (onboarding['planned_product_dev'] + onboarding['planned_manpower'] + 
+                       onboarding['planned_marketing'] + onboarding['planned_operations'])
+        avg_marketing = onboarding['planned_marketing']
+        avg_new_customers = 0
+    
+    return {
+        'current_cash': current_cash,
+        'avg_revenue': avg_revenue,
+        'avg_expenses': avg_expenses,
+        'avg_marketing': avg_marketing,
+        'avg_new_customers': avg_new_customers,
+        'months_elapsed': months_elapsed
+    }
 
 @tool
 def get_financial_summary():
@@ -271,28 +299,58 @@ def compute_burn_rate():
     recent_months = monthly_data[-3:] if len(monthly_data) >= 3 else monthly_data
     
     actual_burns = []
+    revenues = []
+    expense_breakdown = {'product_dev': [], 'manpower': [], 'marketing': [], 'operations': [], 'other': []}
+    
     for month in recent_months:
         total_expenses = (month['product_dev_expenses'] + month['manpower_expenses'] + 
                          month['marketing_expenses'] + month['operations_expenses'] + month['other_expenses'])
         actual_burns.append(total_expenses)
+        revenues.append(month['revenue'])
+        
+        expense_breakdown['product_dev'].append(month['product_dev_expenses'])
+        expense_breakdown['manpower'].append(month['manpower_expenses'])
+        expense_breakdown['marketing'].append(month['marketing_expenses'])
+        expense_breakdown['operations'].append(month['operations_expenses'])
+        expense_breakdown['other'].append(month['other_expenses'])
     
     avg_actual_burn = sum(actual_burns) / len(actual_burns)
+    avg_revenue = sum(revenues) / len(revenues)
+    net_burn = avg_actual_burn - avg_revenue
     
-    return f"""BURN RATE ANALYSIS:
+    # Calculate expense breakdown percentages
+    breakdown_text = "\n\nEXPENSE BREAKDOWN (recent average):"
+    for category, expenses in expense_breakdown.items():
+        avg_expense = sum(expenses) / len(expenses)
+        percentage = (avg_expense / avg_actual_burn * 100) if avg_actual_burn > 0 else 0
+        breakdown_text += f"\n- {category.replace('_', ' ').title()}: ₱{avg_expense:,.2f} ({percentage:.1f}%)"
+    
+    return f"""BURN RATE ANALYSIS ({len(recent_months)}-month average):
 - Planned burn rate: ₱{planned_burn:,.2f}/month
-- Actual burn rate: ₱{avg_actual_burn:,.2f}/month ({len(recent_months)}-month average)
-- Variance: ₱{avg_actual_burn - planned_burn:+,.2f}/month ({((avg_actual_burn - planned_burn) / planned_burn * 100):+.1f}%)"""
+- Actual burn rate: ₱{avg_actual_burn:,.2f}/month
+- Average revenue: ₱{avg_revenue:,.2f}/month
+- Net burn rate: ₱{net_burn:,.2f}/month
+- Variance from plan: ₱{avg_actual_burn - planned_burn:+,.2f}/month ({((avg_actual_burn - planned_burn) / planned_burn * 100):+.1f}%){breakdown_text}"""
 
 @tool
-def compute_runway(simulated_expense=None):
-    """Compute current runway based on actual cash position and recent burn rate"""
+def compute_runway(simulated_expense=None, simulated_revenue=None):
+    """Compute current runway based on actual cash position and burn rate scenarios"""
     onboarding = get_onboarding_data()
     monthly_data = get_monthly_financial_data()
     current_cash, months_elapsed = calculate_current_cash()
     
-    if simulated_expense is not None:
-        runway = math.floor(current_cash / simulated_expense)
-        return f"Simulated runway: {runway} months (₱{current_cash:,.2f} ÷ ₱{simulated_expense:,.2f}/month)"
+    if simulated_expense is not None or simulated_revenue is not None:
+        # Use current metrics as baseline
+        metrics = get_current_metrics()
+        expense = simulated_expense if simulated_expense is not None else metrics['avg_expenses']
+        revenue = simulated_revenue if simulated_revenue is not None else metrics['avg_revenue']
+        net_burn = expense - revenue
+        
+        if net_burn <= 0:
+            return f"Simulated scenario: Cash positive! Generating ₱{abs(net_burn):,.2f}/month in positive cash flow"
+        
+        runway = math.floor(current_cash / net_burn)
+        return f"Simulated runway: {runway} months (₱{current_cash:,.2f} ÷ ₱{net_burn:,.2f}/month net burn)\nExpenses: ₱{expense:,.2f}/month, Revenue: ₱{revenue:,.2f}/month"
     
     if not monthly_data:
         planned_burn = (onboarding['planned_product_dev'] + onboarding['planned_manpower'] + 
@@ -314,12 +372,23 @@ def compute_runway(simulated_expense=None):
     
     runway = math.floor(current_cash / net_burn)
     
+    # Runway health assessment
+    runway_status = ""
+    if runway >= 12:
+        runway_status = "\n✅ HEALTHY RUNWAY: Strong financial position (12+ months)"
+    elif runway >= 6:
+        runway_status = "\n👍 ADEQUATE RUNWAY: Safe zone but start planning next milestone (6-12 months)"
+    elif runway >= 3:
+        runway_status = "\n⚠️ SHORT RUNWAY: Concerning - need immediate action (3-6 months)"
+    else:
+        runway_status = "\n🚨 CRITICAL RUNWAY: Dangerous situation - urgent funding needed (<3 months)"
+    
     return f"""Current runway: {runway} months
 - Current cash: ₱{current_cash:,.2f}
 - Average monthly revenue: ₱{avg_revenue:,.2f}
 - Average monthly expenses: ₱{avg_expenses:,.2f}
 - Net monthly burn: ₱{net_burn:,.2f}
-({len(recent_months)} month average)"""
+({len(recent_months)} month average){runway_status}"""
 
 @tool
 def compute_cac():
@@ -348,6 +417,20 @@ def compute_cac():
     lifetime_cac_display = "∞ (No customers acquired yet)" if lifetime_cac == float('inf') else f"₱{lifetime_cac:,.2f}"
     recent_cac_display = "∞ (No customers acquired in period)" if recent_cac == float('inf') else f"₱{recent_cac:,.2f}"
 
+    # CAC health assessment
+    health_assessment = "\n\nCAC HEALTH ASSESSMENT:"
+    if recent_cac != float('inf'):
+        if recent_cac < 500:
+            health_assessment += "\n✅ EXCELLENT: Very efficient customer acquisition"
+        elif recent_cac < 2000:
+            health_assessment += "\n👍 GOOD: Reasonable customer acquisition cost"
+        elif recent_cac < 5000:
+            health_assessment += "\n⚠️ CONCERNING: High customer acquisition cost"
+        else:
+            health_assessment += "\n❌ CRITICAL: Very expensive customer acquisition"
+    else:
+        health_assessment += "\n❓ UNKNOWN: No recent customer acquisitions to analyze"
+
     return f"""CUSTOMER ACQUISITION COST (CAC) - {onboarding['startup_name']}
 
 ACQUISITION METRICS:
@@ -356,7 +439,7 @@ ACQUISITION METRICS:
 - Lifetime marketing spend: ₱{total_marketing:,.2f}
 - Lifetime new customers acquired: {total_new_customers}
 - Recent marketing spend: ₱{recent_marketing:,.2f}
-- Recent new customers: {recent_new_customers}"""
+- Recent new customers: {recent_new_customers}{health_assessment}"""
 
 def calculate_cac_helper(monthly_data, months=3):
     """Helper function to calculate CAC without being a tool"""
@@ -408,10 +491,14 @@ def compute_customer_ltv():
     
     ltv_cac_ratio = (ltv / recent_cac) if recent_cac != float('inf') and recent_cac > 0 else float('inf')
     
+    # Calculate payback period (CAC / monthly revenue per customer)
+    payback_period = (recent_cac / arpu) if arpu > 0 and recent_cac != float('inf') else float('inf')
+    
     ltv_display = f"₱{ltv:,.2f}" if ltv != float('inf') else "∞ (No churn detected)"
     lifespan_display = f"{customer_lifespan:.1f} months" if customer_lifespan != float('inf') else "∞ (No churn)"
     ratio_display = f"{ltv_cac_ratio:.1f}:1" if ltv_cac_ratio != float('inf') else "∞:1"
     recent_cac_display = f"₱{recent_cac:,.2f}" if recent_cac != float('inf') else "∞"
+    payback_display = f"{payback_period:.1f} months" if payback_period != float('inf') else "∞"
     
     analysis = f"""CUSTOMER LIFETIME VALUE (LTV) - {onboarding['startup_name']}
 
@@ -420,92 +507,559 @@ LTV CALCULATION:
 - Average Customer Lifespan: {lifespan_display}
 - Customer Lifetime Value: {ltv_display}
 
-LTV:CAC ANALYSIS:
+UNIT ECONOMICS:
 - LTV: {ltv_display}
 - CAC: {recent_cac_display}
 - LTV:CAC Ratio: {ratio_display}
+- Payback Period: {payback_display}
 - Recent marketing spend: ₱{recent_marketing:,.2f}
 - Recent new customers: {recent_new_customers}
 
 HEALTH ASSESSMENT:"""
     
     if ltv_cac_ratio >= 3:
-        analysis += "\n✅ EXCELLENT: Strong LTV:CAC ratio"
+        analysis += "\n✅ EXCELLENT: Strong LTV:CAC ratio (≥3:1)"
     elif ltv_cac_ratio >= 2:
-        analysis += "\n👍 GOOD: Healthy unit economics"
+        analysis += "\n👍 GOOD: Healthy unit economics (2-3:1)"
     elif ltv_cac_ratio >= 1:
-        analysis += "\n⚠️ CONCERNING: Break-even unit economics"
+        analysis += "\n⚠️ CONCERNING: Break-even unit economics (1-2:1)"
     else:
-        analysis += "\n❌ CRITICAL: Negative unit economics"
+        analysis += "\n❌ CRITICAL: Negative unit economics (<1:1)"
+    
+    return analysis
+
+import math
+@tool
+def analyze_hiring_affordability(role="developer", monthly_salary=None, num_hires=1):
+    """Analyze if startup can afford to hire new employee(s) by recalculating runway.
+
+    """
+    if monthly_salary is None:
+        raise ValueError(f"Monthly salary must be provided for {role} position.")
+
+    monthly_data = get_monthly_financial_data()
+    current_cash, _ = calculate_current_cash()
+    
+    # Calculate current burn rate (3-month average if available)
+    if monthly_data:
+        recent_months = monthly_data[-3:] if len(monthly_data) >= 3 else monthly_data
+        avg_expenses = sum(
+            m['product_dev_expenses'] + m['manpower_expenses'] +
+            m['marketing_expenses'] + m['operations_expenses'] +
+            m['other_expenses']
+            for m in recent_months
+        ) / len(recent_months)
+        avg_revenue = sum(m['revenue'] for m in recent_months) / len(recent_months)
+        net_burn = avg_expenses - avg_revenue
+    else:
+        onboarding = get_onboarding_data()
+        avg_expenses = (
+            onboarding['planned_product_dev'] +
+            onboarding['planned_manpower'] +
+            onboarding['planned_marketing'] +
+            onboarding['planned_operations']
+        )
+        avg_revenue = onboarding['target_revenue']
+        net_burn = avg_expenses - avg_revenue
+
+    current_runway = math.floor(current_cash / net_burn) if net_burn > 0 else float('inf')
+    
+    # Add new hires to monthly expenses
+    total_new_salary = monthly_salary * num_hires
+    new_monthly_expenses = avg_expenses + total_new_salary
+    new_net_burn = new_monthly_expenses - avg_revenue
+    new_runway = math.floor(current_cash / new_net_burn) if new_net_burn > 0 else float('inf')
+    runway_impact = new_runway - current_runway if current_runway != float('inf') else 0
+    
+    hire_text = f"{num_hires} {role}{'s' if num_hires > 1 else ''}"
+    
+    analysis = f"""HIRING AFFORDABILITY ANALYSIS - {hire_text.title()}:
+
+SALARY IMPACT:
+- Salary per hire: ₱{monthly_salary:,.2f}/month
+- Total new salary cost: ₱{total_new_salary:,.2f}/month
+- Number of hires: {num_hires}
+
+COMPUTATIONS:
+- Current monthly expenses: ₱{avg_expenses:,.2f}/month
+- New monthly expenses (including hire(s)): ₱{new_monthly_expenses:,.2f}/month
+- Current net burn rate: ₱{net_burn:,.2f}/month
+- New net burn rate: ₱{new_net_burn:,.2f}/month
+
+RUNWAY IMPACT:
+- Current runway: {current_runway if current_runway != float('inf') else '∞'} months
+- New runway with hire(s): {new_runway if new_runway != float('inf') else '∞'} months
+- Runway impact: {runway_impact:+} months
+"""
+
+    # Simple affordability assessment
+    if new_runway < 3:
+        analysis += "\n🚨 CRITICAL: Runway <3 months. Hiring not recommended."
+    elif new_runway < 6:
+        analysis += "\n❌ DANGEROUS: Short runway (3-6 months). Hire only if revenue growth expected."
+    elif new_runway < 12:
+        analysis += "\n⚠️ RISKY: Runway 6-12 months. Consider timing and fundraising."
+    else:
+        analysis += "\n✅ AFFORDABLE: Healthy runway (12+ months) and strong cash position."
     
     return analysis
 
 @tool
-def analyze_hiring_affordability(role="developer", monthly_salary=None, months_ahead=6):
-    """Analyze if startup can afford to hire new employee(s) with given salary
+def scenario_planning(revenue_change_pct=0, expense_change_pct=0, marketing_change_pct=0, months_to_project=12):
+    """Run scenario planning with revenue and expense changes. Perfect for 'what if' questions like:
+    - 'What happens to runway if revenue drops by 20%?' → revenue_change_pct=-20
+    - 'If we cut expenses by 15%?' → expense_change_pct=-15
+    - 'If we increase marketing spend by 50%?' → marketing_change_pct=50
     
     Args:
-        role: Job role title (used for display purposes only)
-        monthly_salary: Required monthly salary amount
-        months_ahead: Number of months to project costs
+        revenue_change_pct: Percentage change in revenue (e.g., 20 for +20%, -20 for -20%)
+        expense_change_pct: Percentage change in total expenses  
+        marketing_change_pct: Percentage change in marketing spend specifically
+        months_to_project: Number of months to project forward
     """
-    if monthly_salary is None:
-        raise ValueError(f"Monthly salary must be provided for {role} position. Please specify the salary amount.")
+    metrics = get_current_metrics()
     
-    onboarding = get_onboarding_data()
-    monthly_data = get_monthly_financial_data()
-    current_cash, _ = calculate_current_cash()
+    # Calculate scenario values
+    current_revenue = metrics['avg_revenue']
+    current_expenses = metrics['avg_expenses']
+    current_net_burn = current_expenses - current_revenue
+    current_runway = math.floor(metrics['current_cash'] / current_net_burn) if current_net_burn > 0 else float('inf')
     
-    # Calculate current burn rate
-    if monthly_data:
-        latest = monthly_data[-1]
-        current_burn = (latest['product_dev_expenses'] + latest['manpower_expenses'] + 
-                       latest['marketing_expenses'] + latest['operations_expenses'] + latest['other_expenses'])
-        current_revenue = latest['revenue']
+    new_revenue = current_revenue * (1 + revenue_change_pct / 100)
+    base_expenses = current_expenses
+    marketing_adjustment = metrics['avg_marketing'] * (marketing_change_pct / 100)
+    new_expenses = base_expenses * (1 + expense_change_pct / 100) + marketing_adjustment
+    
+    new_net_burn = new_expenses - new_revenue
+    
+    # Handle scenario where net burn is zero or negative (cash positive)
+    if new_net_burn <= 0:
+        runway = float('inf')
+        cash_out_month = None
     else:
-        current_burn = (onboarding['planned_product_dev'] + onboarding['planned_manpower'] + 
-                       onboarding['planned_marketing'] + onboarding['planned_operations'])
-        current_revenue = onboarding['target_revenue']
+        # Project forward only if burning cash
+        runway = math.floor(metrics['current_cash'] / new_net_burn)
+        cash_out_month = runway + 1 if runway < months_to_project else None
     
-    net_burn = current_burn - current_revenue
-    current_runway = math.floor(current_cash / net_burn) if net_burn > 0 else float('inf')
+    # Create simplified projections for milestones
+    monthly_projections = []
+    projected_cash = metrics['current_cash']
     
-    # Calculate impact of new hire
-    new_burn = current_burn + monthly_salary
-    new_net_burn = new_burn - current_revenue
-    new_runway = math.floor(current_cash / new_net_burn) if new_net_burn > 0 else float('inf')
-    runway_impact = new_runway - current_runway if current_runway != float('inf') else 0
+    if new_net_burn > 0:  # Only create projections if burning cash
+        for month in range(1, min(months_to_project + 1, runway + 2)):
+            projected_cash -= new_net_burn
+            monthly_projections.append({
+                'month': month,
+                'cash': projected_cash,
+                'revenue': new_revenue,
+                'expenses': new_expenses,
+                'net_burn': new_net_burn
+            })
+            
+            if projected_cash <= 0:
+                break
     
-    # Additional hiring costs (benefits, equipment, onboarding)
-    total_monthly_cost = monthly_salary
-    
-    analysis = f"""HIRING AFFORDABILITY ANALYSIS - {role.title()}:
 
-SALARY IMPACT:
-- Base monthly salary: ₱{monthly_salary:,.2f}
-- Total monthly cost: ₱{total_monthly_cost:,.2f}
-
-RUNWAY IMPACT:
-- Current runway: {current_runway if current_runway != float('inf') else '∞'} months
-- New runway with hire: {new_runway if new_runway != float('inf') else '∞'} months
-- Impact: {runway_impact:+} months
-
-AFFORDABILITY ASSESSMENT:"""
     
-    if new_runway >= 12 or new_runway == float('inf'):
-        analysis += "\n✅ AFFORDABLE: Still maintains healthy runway"
-    elif new_runway >= 6:
-        analysis += "\n⚠️ RISKY: Runway becomes concerning, consider timing"
+    scenario_name = []
+    if revenue_change_pct != 0:
+        scenario_name.append(f"Revenue {revenue_change_pct:+.0f}%")
+    if expense_change_pct != 0:
+        scenario_name.append(f"Expenses {expense_change_pct:+.0f}%")
+    if marketing_change_pct != 0:
+        scenario_name.append(f"Marketing {marketing_change_pct:+.0f}%")
+    
+    scenario_title = " + ".join(scenario_name) if scenario_name else "Current Trajectory"
+    
+    # Calculate runway impact safely
+    if current_runway != float('inf'):
+        runway_change = runway - current_runway
+        runway_change_text = f"{runway_change:+} months"
+        runway_comparison = f"{current_runway} → {runway}"
     else:
-        analysis += "\n❌ NOT AFFORDABLE: Would create dangerous runway situation"
+        runway_change_text = "N/A (was infinite)"
+        runway_comparison = f"∞ → {runway}"
+
+    analysis = f"""SCENARIO PLANNING - {scenario_title}
+
+CURRENT STATE:
+- Current Cash: ₱{metrics['current_cash']:,.2f}
+- Current Revenue: ₱{current_revenue:,.2f}/month
+- Current Expenses: ₱{current_expenses:,.2f}/month
+- Current Net Burn: ₱{current_net_burn:,.2f}/month
+- Current Runway: {current_runway if current_runway != float('inf') else '∞'} months
+
+SCENARIO ASSUMPTIONS:
+- New Revenue: ₱{new_revenue:,.2f}/month ({revenue_change_pct:+.1f}% change)
+- New Expenses: ₱{new_expenses:,.2f}/month ({((new_expenses - base_expenses) / base_expenses * 100):+.1f}% total change)
+- New Net Burn: ₱{new_net_burn:,.2f}/month
+
+IMPACT ANALYSIS:
+- Runway Change: {runway_change_text} ({runway_comparison})
+- Cash runs out: {'Month ' + str(cash_out_month) if cash_out_month else 'Beyond projection period'}
+
+RUNWAY ASSESSMENT:"""
+
+    # Runway health assessment for the scenario
+    if new_net_burn <= 0:
+        analysis += "\n🎉 CASH POSITIVE: No runway concerns - generating positive cash flow!"
+    elif runway >= 12:
+        analysis += "\n✅ HEALTHY: Strong runway even in this scenario (12+ months)"
+    elif runway >= 6:
+        analysis += "\n👍 ADEQUATE: Manageable runway in this scenario (6-12 months)"  
+    elif runway >= 3:
+        analysis += "\n⚠️ SHORT: Concerning runway in this scenario (3-6 months)"
+    else:
+        analysis += "\n🚨 CRITICAL: Dangerous runway in this scenario (<3 months)"
     
-    # Cost per month for different time periods
-    analysis += f"\n\nCOST PROJECTION ({months_ahead} months):"
-    analysis += f"\n- Total cost: ₱{total_monthly_cost * months_ahead:,.2f}"
-    analysis += f"\n- Cash remaining: ₱{current_cash - (total_monthly_cost * months_ahead):,.2f}"
+    # Show milestones only if we have projections
+    if monthly_projections:
+        milestones = [3, 6, 12, 18, 24]
+        analysis += "\n\nCASH MILESTONES:"
+        for milestone in milestones:
+            if milestone <= len(monthly_projections):
+                cash_at_milestone = monthly_projections[milestone-1]['cash']
+                analysis += f"\n- Month {milestone}: ₱{cash_at_milestone:,.2f}"
+            elif milestone <= months_to_project and new_net_burn > 0:
+                analysis += f"\n- Month {milestone}: Cash depleted"
+    
+    # Breakeven analysis
+    if new_net_burn <= 0:
+        analysis += f"\n\n🎉 BREAKEVEN ACHIEVED! Positive cash flow of ₱{abs(new_net_burn):,.2f}/month"
+    else:
+        breakeven_revenue_needed = new_expenses
+        revenue_gap = breakeven_revenue_needed - new_revenue
+        analysis += f"\n\nBREAKEVEN ANALYSIS:"
+        analysis += f"\n- Revenue needed for breakeven: ₱{breakeven_revenue_needed:,.2f}/month"
+        analysis += f"\n- Current revenue gap: ₱{revenue_gap:,.2f}/month"
+        analysis += f"\n- Required revenue growth: {(revenue_gap / new_revenue * 100):+.1f}%"
     
     return analysis
 
+
+@tool
+def fundraising_analysis(raise_amount=None, target_runway_months=18, current_valuation=None):
+    """Analyze fundraising scenarios and requirements
+    
+    Args:
+        raise_amount: Amount to raise (if None, calculates minimum needed)
+        target_runway_months: Desired runway after fundraising
+        current_valuation: Current company valuation for dilution calculation
+    """
+    metrics = get_current_metrics()
+    current_net_burn = metrics['avg_expenses'] - metrics['avg_revenue']
+    
+    if raise_amount is None:
+        # Calculate minimum raise needed
+        cash_needed = current_net_burn * target_runway_months
+        buffer_needed = cash_needed * 0.2  # 20% buffer
+        raise_amount = cash_needed + buffer_needed - metrics['current_cash']
+        raise_amount = max(0, raise_amount)  # Don't go negative
+    
+    new_cash = metrics['current_cash'] + raise_amount
+    new_runway = math.floor(new_cash / current_net_burn) if current_net_burn > 0 else float('inf')
+    
+    # Calculate dilution if valuation provided
+    dilution_text = ""
+    if current_valuation is not None and current_valuation > 0:
+        post_money_valuation = current_valuation + raise_amount
+        dilution_pct = (raise_amount / post_money_valuation) * 100
+        dilution_text = f"""
+DILUTION ANALYSIS:
+- Pre-money valuation: ₱{current_valuation:,.2f}
+- Post-money valuation: ₱{post_money_valuation:,.2f}
+- Dilution: {dilution_pct:.1f}%"""
+    
+    # Series recommendations based on raise size
+    if raise_amount < 5_000_000:
+        series_rec = "Pre-Seed/Angel"
+    elif raise_amount < 25_000_000:
+        series_rec = "Seed Round"
+    elif raise_amount < 100_000_000:
+        series_rec = "Series A"
+    else:
+        series_rec = "Series B+"
+    
+    analysis = f"""FUNDRAISING ANALYSIS
+
+CURRENT FINANCIAL STATE:
+- Current cash: ₱{metrics['current_cash']:,.2f}
+- Monthly net burn: ₱{current_net_burn:,.2f}
+- Current runway: {math.floor(metrics['current_cash'] / current_net_burn) if current_net_burn > 0 else '∞'} months
+
+FUNDRAISING SCENARIO:
+- Raise amount: ₱{raise_amount:,.2f}
+- New total cash: ₱{new_cash:,.2f}
+- New runway: {new_runway if new_runway != float('inf') else '∞'} months
+- Recommended round type: {series_rec}{dilution_text}
+
+FUNDRAISING READINESS:"""
+    
+    # Assess fundraising readiness
+    if new_runway >= 18:
+        analysis += "\n✅ OPTIMAL: Excellent runway for growth and next milestone"
+    elif new_runway >= 12:
+        analysis += "\n👍 GOOD: Adequate runway, consider market timing"
+    elif new_runway >= 6:
+        analysis += "\n⚠️ MINIMUM: Just enough runway, raise more if possible"
+    else:
+        analysis += "\n❌ INSUFFICIENT: Need to raise more for adequate runway"
+    
+    # Calculate different raise scenarios
+    analysis += "\n\nRAISE SCENARIOS:"
+    scenarios = [raise_amount * 0.5, raise_amount, raise_amount * 1.5]
+    for i, amount in enumerate(scenarios):
+        scenario_cash = metrics['current_cash'] + amount
+        scenario_runway = math.floor(scenario_cash / current_net_burn) if current_net_burn > 0 else float('inf')
+        scenario_names = ["Conservative", "Target", "Aggressive"]
+        analysis += f"\n- {scenario_names[i]}: ₱{amount:,.2f} → {scenario_runway if scenario_runway != float('inf') else '∞'} months runway"
+    
+    return analysis
+
+@tool
+def marketing_scaling_analysis(cac_target=None, budget_increase_pct=0, efficiency_change_pct=0):
+    """Analyze marketing scaling opportunities and CAC optimization
+    
+    Args:
+        cac_target: Target CAC to achieve (if None, uses current CAC)
+        budget_increase_pct: Percentage increase in marketing budget
+        efficiency_change_pct: Percentage change in marketing efficiency (negative = worse, positive = better)
+    """
+    onboarding = get_onboarding_data()
+    monthly_data = get_monthly_financial_data()
+    
+    if not monthly_data:
+        return "No monthly financial data available for marketing analysis."
+    
+    # Get current metrics
+    recent_cac, recent_marketing, recent_new_customers = calculate_cac_helper(monthly_data, 3)
+    current_cac = recent_cac if recent_cac != float('inf') else 0
+    
+    # Calculate LTV for comparison
+    churn_data = calculate_customer_churn(monthly_data, onboarding)
+    if churn_data:
+        recent_churn_data = churn_data[-3:] if len(churn_data) >= 3 else churn_data
+        recent_months = monthly_data[-3:] if len(monthly_data) >= 3 else monthly_data
+        
+        avg_revenue = sum(month['revenue'] for month in recent_months) / len(recent_months)
+        avg_active_customers = sum(month['active_customers'] for month in recent_months) / len(recent_months)
+        arpu = avg_revenue / avg_active_customers if avg_active_customers > 0 else 0
+        
+        avg_monthly_churn_rate = sum(month['churn_rate'] for month in recent_churn_data) / len(recent_churn_data) / 100
+        customer_lifespan = (1 / avg_monthly_churn_rate) if avg_monthly_churn_rate > 0 else float('inf')
+        ltv = arpu * customer_lifespan if customer_lifespan != float('inf') else float('inf')
+    else:
+        ltv = float('inf')
+        arpu = 0
+    
+    # Calculate new marketing scenario
+    new_marketing_budget = recent_marketing * (1 + budget_increase_pct / 100)
+    marketing_efficiency_multiplier = 1 + (efficiency_change_pct / 100)
+    
+    # New customers acquired with efficiency changes
+    baseline_customers_per_peso = recent_new_customers / recent_marketing if recent_marketing > 0 else 0
+    new_customers_per_peso = baseline_customers_per_peso * marketing_efficiency_multiplier
+    projected_new_customers = new_marketing_budget * new_customers_per_peso
+    
+    projected_cac = new_marketing_budget / projected_new_customers if projected_new_customers > 0 else float('inf')
+    
+    # LTV:CAC analysis
+    ltv_cac_ratio = ltv / projected_cac if projected_cac != float('inf') and projected_cac > 0 and ltv != float('inf') else float('inf')
+    
+    # Format display values to avoid f-string issues
+    ltv_display = f"₱{ltv:,.2f}" if ltv != float('inf') else "∞"
+    
+    # Safe current LTV:CAC calculation
+    if current_cac > 0 and ltv != float('inf'):
+        current_ltv_cac_ratio = ltv / current_cac
+        current_ltv_cac_display = f"{current_ltv_cac_ratio:.1f}:1"
+    else:
+        current_ltv_cac_display = "∞:1"
+    
+    projected_cac_display = f"₱{projected_cac:,.2f}" if projected_cac != float('inf') else "∞"
+    projected_ltv_cac_display = f"{ltv_cac_ratio:.1f}:1" if ltv_cac_ratio != float('inf') else "∞:1"
+    
+    analysis = f"""MARKETING SCALING ANALYSIS
+
+CURRENT PERFORMANCE:
+- Current marketing spend: ₱{recent_marketing:,.2f}/month
+- Current new customers: {recent_new_customers}/month
+- Current CAC: ₱{current_cac:,.2f}
+- Customer LTV: {ltv_display}
+- Current LTV:CAC: {current_ltv_cac_display}
+
+SCALING SCENARIO:
+- New marketing budget: ₱{new_marketing_budget:,.2f}/month ({budget_increase_pct:+.1f}% change)
+- Marketing efficiency change: {efficiency_change_pct:+.1f}%
+- Projected new customers: {projected_new_customers:.0f}/month
+- Projected CAC: {projected_cac_display}
+- Projected LTV:CAC: {projected_ltv_cac_display}
+
+SCALING ASSESSMENT:"""
+    
+    if projected_cac != float('inf') and ltv != float('inf'):
+        if ltv_cac_ratio >= 3:
+            analysis += "\n✅ EXCELLENT: Strong unit economics, scale aggressively"
+        elif ltv_cac_ratio >= 2:
+            analysis += "\n👍 GOOD: Healthy scaling opportunity"
+        elif ltv_cac_ratio >= 1:
+            analysis += "\n⚠️ BREAK-EVEN: Scaling will not hurt but won't help profitability"
+        else:
+            analysis += "\n❌ UNPROFITABLE: Scaling will worsen unit economics"
+    
+    # Budget recommendations
+    max_profitable_cac = ltv / 3 if ltv != float('inf') else float('inf')  # Conservative 3:1 ratio
+    max_monthly_marketing = max_profitable_cac * projected_new_customers if max_profitable_cac != float('inf') else float('inf')
+    
+    analysis += f"\n\nRECOMMENDATIONS:"
+    analysis += f"\n- Maximum profitable CAC: ₱{max_profitable_cac:,.2f if max_profitable_cac != float('inf') else '∞'}"
+    analysis += f"\n- Maximum recommended marketing spend: ₱{max_monthly_marketing:,.2f if max_monthly_marketing != float('inf') else '∞'}/month"
+    
+    # Show payback period
+    if arpu > 0 and projected_cac != float('inf'):
+        payback_months = projected_cac / arpu
+        analysis += f"\n- Customer payback period: {payback_months:.1f} months"
+    
+    return analysis
+@tool
+def expense_optimization_analysis():
+    """Analyze expense categories and identify optimization opportunities"""
+    onboarding = get_onboarding_data()
+    monthly_data = get_monthly_financial_data()
+    
+    if not monthly_data:
+        return "No monthly financial data available for expense analysis."
+    
+    # Calculate recent averages
+    recent_months = monthly_data[-3:] if len(monthly_data) >= 3 else monthly_data
+    
+    expense_categories = {
+        'Product Development': sum(m['product_dev_expenses'] for m in recent_months) / len(recent_months),
+        'Manpower': sum(m['manpower_expenses'] for m in recent_months) / len(recent_months),
+        'Marketing': sum(m['marketing_expenses'] for m in recent_months) / len(recent_months),
+        'Operations': sum(m['operations_expenses'] for m in recent_months) / len(recent_months),
+        'Other': sum(m['other_expenses'] for m in recent_months) / len(recent_months)
+    }
+    
+    total_expenses = sum(expense_categories.values())
+    
+    # Compare with planned expenses
+    planned_expenses = {
+        'Product Development': onboarding['planned_product_dev'],
+        'Manpower': onboarding['planned_manpower'],
+        'Marketing': onboarding['planned_marketing'],
+        'Operations': onboarding['planned_operations']
+    }
+    
+    analysis = f"""EXPENSE OPTIMIZATION ANALYSIS - {len(recent_months)}-month average
+
+EXPENSE BREAKDOWN:
+- Total Monthly Expenses: ₱{total_expenses:,.2f}"""
+    
+    # Sort categories by size for analysis
+    sorted_expenses = sorted(expense_categories.items(), key=lambda x: x[1], reverse=True)
+    
+    for category, amount in sorted_expenses:
+        percentage = (amount / total_expenses * 100) if total_expenses > 0 else 0
+        planned = planned_expenses.get(category, 0)
+        variance = amount - planned if planned > 0 else 0
+        variance_pct = (variance / planned * 100) if planned > 0 else 0
+        
+        analysis += f"\n- {category}: ₱{amount:,.2f} ({percentage:.1f}%)"
+        if planned > 0:
+            analysis += f" [vs ₱{planned:,.2f} planned, {variance_pct:+.1f}%]"
+    
+    # Optimization recommendations
+    analysis += "\n\nOPTIMIZATION OPPORTUNITIES:"
+    
+    largest_category = sorted_expenses[0]
+    if largest_category[1] > total_expenses * 0.4:  # If any category is >40%
+        analysis += f"\n🎯 PRIORITY: {largest_category[0]} represents {(largest_category[1]/total_expenses*100):.1f}% of expenses"
+    
+    # Identify categories over plan
+    over_budget = [(cat, amt, planned_expenses.get(cat, 0)) for cat, amt in expense_categories.items() 
+                   if planned_expenses.get(cat, 0) > 0 and amt > planned_expenses.get(cat, 0) * 1.1]
+    
+    if over_budget:
+        analysis += "\n⚠️ OVER BUDGET:"
+        for category, actual, planned in over_budget:
+            overage = actual - planned
+            overage_pct = (overage / planned * 100)
+            analysis += f"\n- {category}: +₱{overage:,.2f} (+{overage_pct:.1f}%) over plan"
+    
+    # Calculate potential savings scenarios
+    analysis += "\n\nSAVINGS SCENARIOS:"
+    savings_scenarios = [5, 10, 20]  # percentage cuts
+    
+    for cut_pct in savings_scenarios:
+        savings = total_expenses * (cut_pct / 100)
+        new_total = total_expenses - savings
+        
+        # Calculate runway impact
+        metrics = get_current_metrics()
+        current_net_burn = metrics['avg_expenses'] - metrics['avg_revenue']
+        new_net_burn = new_total - metrics['avg_revenue']
+        
+        current_runway = math.floor(metrics['current_cash'] / current_net_burn) if current_net_burn > 0 else float('inf')
+        new_runway = math.floor(metrics['current_cash'] / new_net_burn) if new_net_burn > 0 else float('inf')
+        runway_extension = new_runway - current_runway if current_runway != float('inf') else 0
+        
+        analysis += f"\n- {cut_pct}% cut: Save ₱{savings:,.2f}/month, extend runway by {runway_extension:+} months"
+    
+    return analysis
+
+@tool
+def simulate_expense_growth_scenarios(expense_growth_rate, revenue_growth_rate=0):
+    """Simulate impact of expense growth with flat or growing revenue"""
+    monthly_data = get_monthly_financial_data()
+    current_cash, _ = calculate_current_cash()
+    
+    if not monthly_data:
+        return "No historical data available for simulation"
+    
+    latest_month = monthly_data[-1]
+    current_revenue = latest_month['monthly_revenue']
+    current_expenses = (latest_month['product_development_expense'] + latest_month['manpower_expense'] + 
+                       latest_month['marketing_expense'] + latest_month['operations_expense'] + latest_month['other_expenses'])
+    
+    analysis = f"""EXPENSE GROWTH SIMULATION:
+
+CURRENT STATE:
+- Monthly revenue: ₱{current_revenue:,.2f}
+- Monthly expenses: ₱{current_expenses:,.2f}
+- Current margin: {((current_revenue - current_expenses)/current_revenue*100) if current_revenue > 0 else -100:.1f}%
+
+SCENARIOS (12-month projection):"""
+    
+    cash_position = current_cash
+    
+    for month in range(1, 13):
+        month_revenue = current_revenue * ((1 + revenue_growth_rate) ** month)
+        month_expenses = current_expenses * ((1 + expense_growth_rate) ** month)
+        net_flow = month_revenue - month_expenses
+        cash_position += net_flow
+        
+        if month <= 6:  # Show first 6 months in detail
+            margin = ((month_revenue - month_expenses) / month_revenue * 100) if month_revenue > 0 else -100
+            analysis += f"\nMonth {month}: Rev ₱{month_revenue:,.2f}, Exp ₱{month_expenses:,.2f}, Margin {margin:.1f}%, Cash ₱{cash_position:,.2f}"
+        
+        if cash_position <= 0:
+            analysis += f"\n⚠️ CASH DEPLETION: Would run out in month {month}"
+            break
+    
+    final_revenue = current_revenue * ((1 + revenue_growth_rate) ** 12)
+    final_expenses = current_expenses * ((1 + expense_growth_rate) ** 12)
+    final_margin = ((final_revenue - final_expenses) / final_revenue * 100) if final_revenue > 0 else -100
+    
+    analysis += f"\n\nYEAR-END PROJECTIONS:"
+    analysis += f"\n- Revenue: ₱{final_revenue:,.2f} ({revenue_growth_rate*100:+.1f}% growth)"
+    analysis += f"\n- Expenses: ₱{final_expenses:,.2f} ({expense_growth_rate*100:+.1f}% growth)"  
+    analysis += f"\n- Final margin: {final_margin:.1f}%"
+    analysis += f"\n- Cash position: ₱{cash_position:,.2f}"
+    
+    return analysis
+
+# Add the new tools to the tools list
 tools = [
     get_financial_summary, 
     analyze_customer_churn, 
@@ -513,5 +1067,10 @@ tools = [
     compute_runway,
     compute_cac,
     compute_customer_ltv,
-    analyze_hiring_affordability
+    analyze_hiring_affordability,
+    scenario_planning,
+    fundraising_analysis,
+    marketing_scaling_analysis,
+    expense_optimization_analysis,
+    simulate_expense_growth_scenarios
 ]
