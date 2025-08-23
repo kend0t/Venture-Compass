@@ -6,8 +6,7 @@ from datetime import datetime
 from uuid import uuid4
 from fastapi.responses import StreamingResponse
 import json
-
-# Import chatbot engine and error logging
+from db import get_connection
 from core import app as chatbot_app
 from logger import log_error
 from langchain_core.messages import HumanMessage, AIMessage
@@ -230,6 +229,23 @@ async def clear_chat_history(thread_id: str):
         )
         raise HTTPException(status_code=500, detail=f"Error clearing history: {str(e)}")
 
+@api.get("/db/{table_name}")
+async def get_table_data(table_name: str, limit: int = 10):
+    """Retrieve rows from a given database table."""
+    try:
+        # psycopg2 supports `with` to auto-close connections and cursors
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT * FROM {table_name} LIMIT %s;", (limit,))
+                colnames = [desc[0] for desc in cur.description]  # column headers
+                rows = cur.fetchall()
+
+        # Format rows into list of dicts
+        results = [dict(zip(colnames, row)) for row in rows]
+        return {"table": table_name, "rows": results}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(api, host="0.0.0.0", port=8000, reload=True)
