@@ -233,11 +233,10 @@ async def clear_chat_history(thread_id: str):
 async def get_table_data(table_name: str, limit: int = 10):
     """Retrieve rows from a given database table."""
     try:
-        # psycopg2 supports `with` to auto-close connections and cursors
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(f"SELECT * FROM {table_name} LIMIT %s;", (limit,))
-                colnames = [desc[0] for desc in cur.description]  # column headers
+                colnames = [desc[0] for desc in cur.description] 
                 rows = cur.fetchall()
 
         # Format rows into list of dicts
