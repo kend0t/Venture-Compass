@@ -4,8 +4,7 @@ Repository for our BPI DataWave Product
 ### Setup Instructions
 - gawa kayo venv nyo tas run "pip install -r requirements.txt" para ma-dl lahat ng need na libraries
 - then sa database (Postgre) gawa kayo onboarding_data at monthly_financial_data na tables
-- sa core.py kayo mag run if gusto niyo itest nasa pinakababa ung paglalagyan ng queries
-  
+- to run backend: cd to app folder, then run uvicorn main:api --reload -port 8000 in the terminal
 ### onboarding_data column names:
 - startup_name
 - industry
