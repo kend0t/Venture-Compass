@@ -244,6 +244,11 @@ async def get_table_data(table_name: str, limit: int = 10):
         return {"table": table_name, "rows": results}
 
     except Exception as e:
+        log_error(
+            error_type="RETRIEVE_DATA_ERROR",
+            error_message=f"Error retrieving data: {str(e)}",
+            context={"endpoint": "/db/table_name (GET)"},
+        )
         raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
 if __name__ == "__main__":
     import uvicorn
