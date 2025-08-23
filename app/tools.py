@@ -12,7 +12,7 @@ def get_onboarding_data():
 
         cur.execute("""
             SELECT 
-                startup_namee,
+                startup_name,
                 industry,
                 target_revenue,
                 product_dev_expenses AS planned_product_dev,
