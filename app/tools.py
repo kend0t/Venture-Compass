@@ -605,16 +605,18 @@ RUNWAY IMPACT:
     return analysis
 
 @tool
-def scenario_planning(revenue_change_pct=0, expense_change_pct=0, marketing_change_pct=0, months_to_project=12):
+def scenario_planning(revenue_change_pct=0, expense_change_pct=0, marketing_change_pct=0, marketing_change_amount=0, months_to_project=12):
     """Run scenario planning with revenue and expense changes. Perfect for 'what if' questions like:
     - 'What happens to runway if revenue drops by 20%?' → revenue_change_pct=-20
     - 'If we cut expenses by 15%?' → expense_change_pct=-15
     - 'If we increase marketing spend by 50%?' → marketing_change_pct=50
+    - 'What if I cut marketing costs by ₱100,000?' → marketing_change_amount=-100000
     
     Args:
         revenue_change_pct: Percentage change in revenue (e.g., 20 for +20%, -20 for -20%)
         expense_change_pct: Percentage change in total expenses  
         marketing_change_pct: Percentage change in marketing spend specifically
+        marketing_change_amount: Absolute change in monthly marketing spend (e.g., -100000 for ₱100k cut)
         months_to_project: Number of months to project forward
     """
     metrics = get_current_metrics()
@@ -622,13 +624,29 @@ def scenario_planning(revenue_change_pct=0, expense_change_pct=0, marketing_chan
     # Calculate scenario values
     current_revenue = metrics['avg_revenue']
     current_expenses = metrics['avg_expenses']
+    current_marketing = metrics['avg_marketing']
     current_net_burn = current_expenses - current_revenue
     current_runway = math.floor(metrics['current_cash'] / current_net_burn) if current_net_burn > 0 else float('inf')
     
     new_revenue = current_revenue * (1 + revenue_change_pct / 100)
+    
+    # Handle marketing changes - prioritize absolute amount over percentage
+    if marketing_change_amount != 0:
+        new_marketing = current_marketing + marketing_change_amount
+        marketing_adjustment = marketing_change_amount
+    else:
+        marketing_adjustment = current_marketing * (marketing_change_pct / 100)
+        new_marketing = current_marketing + marketing_adjustment
+    
+    # Ensure marketing doesn't go negative
+    new_marketing = max(0, new_marketing)
+    actual_marketing_adjustment = new_marketing - current_marketing
+    
+    # Apply expense changes
     base_expenses = current_expenses
-    marketing_adjustment = metrics['avg_marketing'] * (marketing_change_pct / 100)
-    new_expenses = base_expenses * (1 + expense_change_pct / 100) + marketing_adjustment
+    # First apply the marketing-specific change, then apply overall expense percentage change
+    adjusted_expenses = base_expenses + actual_marketing_adjustment
+    new_expenses = adjusted_expenses * (1 + expense_change_pct / 100)
     
     new_net_burn = new_expenses - new_revenue
     
@@ -653,20 +671,21 @@ def scenario_planning(revenue_change_pct=0, expense_change_pct=0, marketing_chan
                 'cash': projected_cash,
                 'revenue': new_revenue,
                 'expenses': new_expenses,
+                'marketing': new_marketing,
                 'net_burn': new_net_burn
             })
             
             if projected_cash <= 0:
                 break
-    
 
-    
     scenario_name = []
     if revenue_change_pct != 0:
         scenario_name.append(f"Revenue {revenue_change_pct:+.0f}%")
     if expense_change_pct != 0:
         scenario_name.append(f"Expenses {expense_change_pct:+.0f}%")
-    if marketing_change_pct != 0:
+    if marketing_change_amount != 0:
+        scenario_name.append(f"Marketing {actual_marketing_adjustment:+,.0f}")
+    elif marketing_change_pct != 0:
         scenario_name.append(f"Marketing {marketing_change_pct:+.0f}%")
     
     scenario_title = " + ".join(scenario_name) if scenario_name else "Current Trajectory"
@@ -686,20 +705,41 @@ CURRENT STATE:
 - Current Cash: ₱{metrics['current_cash']:,.2f}
 - Current Revenue: ₱{current_revenue:,.2f}/month
 - Current Expenses: ₱{current_expenses:,.2f}/month
+- Current Marketing: ₱{current_marketing:,.2f}/month
 - Current Net Burn: ₱{current_net_burn:,.2f}/month
 - Current Runway: {current_runway if current_runway != float('inf') else '∞'} months
 
 SCENARIO ASSUMPTIONS:
 - New Revenue: ₱{new_revenue:,.2f}/month ({revenue_change_pct:+.1f}% change)
-- New Expenses: ₱{new_expenses:,.2f}/month ({((new_expenses - base_expenses) / base_expenses * 100):+.1f}% total change)
+- New Marketing: ₱{new_marketing:,.2f}/month ({actual_marketing_adjustment:+,.0f} change)
+- New Total Expenses: ₱{new_expenses:,.2f}/month
 - New Net Burn: ₱{new_net_burn:,.2f}/month
 
 IMPACT ANALYSIS:
 - Runway Change: {runway_change_text} ({runway_comparison})
 - Cash runs out: {'Month ' + str(cash_out_month) if cash_out_month else 'Beyond projection period'}
 
-RUNWAY ASSESSMENT:"""
+CAC IMPACT ANALYSIS:"""
 
+    # Calculate CAC impact if we have customer data
+    monthly_data = get_monthly_financial_data()
+    if monthly_data and new_marketing != current_marketing:
+        recent_months = monthly_data[-3:] if len(monthly_data) >= 3 else monthly_data
+        recent_new_customers = sum(month['new_customers'] for month in recent_months) / len(recent_months)
+        
+        if recent_new_customers > 0:
+            current_cac = current_marketing / recent_new_customers
+            new_cac = new_marketing / recent_new_customers  # Assuming same acquisition rate
+            cac_change = new_cac - current_cac
+            cac_change_pct = (cac_change / current_cac * 100) if current_cac > 0 else 0
+            
+            analysis += f"""
+- Current CAC: ₱{current_cac:,.2f}
+- New CAC: ₱{new_cac:,.2f} (assuming same acquisition rate)
+- CAC Change: ₱{cac_change:+,.2f} ({cac_change_pct:+.1f}%)
+- Monthly new customers: {recent_new_customers:.0f} (current rate)"""
+
+    analysis += "\n\nRUNWAY ASSESSMENT:"
     # Runway health assessment for the scenario
     if new_net_burn <= 0:
         analysis += "\n🎉 CASH POSITIVE: No runway concerns - generating positive cash flow!"
@@ -735,7 +775,6 @@ RUNWAY ASSESSMENT:"""
         analysis += f"\n- Required revenue growth: {(revenue_gap / new_revenue * 100):+.1f}%"
     
     return analysis
-
 
 @tool
 def fundraising_analysis(raise_amount=None, target_runway_months=18, current_valuation=None):
@@ -1059,6 +1098,139 @@ SCENARIOS (12-month projection):"""
     
     return analysis
 
+@tool
+def analyze_churn_impact(hypothetical_monthly_churn_rate):
+    """Analyze how a specific churn rate affects payback period, LTV, and unit economics.
+    
+    Args:
+        hypothetical_monthly_churn_rate: Monthly churn rate as percentage (e.g., 5 for 5%)
+    """
+    onboarding = get_onboarding_data()
+    monthly_data = get_monthly_financial_data()
+    
+    if not monthly_data:
+        return "No monthly financial data available for churn impact analysis."
+    
+    # Get current metrics
+    recent_months = monthly_data[-3:] if len(monthly_data) >= 3 else monthly_data
+    avg_revenue = sum(month['revenue'] for month in recent_months) / len(recent_months)
+    avg_active_customers = sum(month['active_customers'] for month in recent_months) / len(recent_months)
+    
+    # Calculate ARPU (Average Revenue Per User per month)
+    arpu = avg_revenue / avg_active_customers if avg_active_customers > 0 else 0
+    
+    # Calculate current CAC manually (don't use helper function)
+    recent_marketing = sum(month['marketing_expenses'] for month in recent_months) / len(recent_months)
+    recent_new_customers = sum(month['new_customers'] for month in recent_months) / len(recent_months)
+    current_cac = recent_marketing / recent_new_customers if recent_new_customers > 0 else float('inf')
+    
+    # Get current churn for comparison
+    churn_data = calculate_customer_churn(monthly_data, onboarding)
+    if churn_data:
+        recent_churn_data = churn_data[-3:] if len(churn_data) >= 3 else churn_data
+        current_avg_churn_rate = sum(month['churn_rate'] for month in recent_churn_data) / len(recent_churn_data)
+    else:
+        current_avg_churn_rate = 0
+    
+    # Calculate metrics with hypothetical churn rate
+    hypothetical_churn_decimal = hypothetical_monthly_churn_rate / 100
+    
+    # Customer lifespan = 1 / monthly churn rate
+    customer_lifespan_months = 1 / hypothetical_churn_decimal if hypothetical_churn_decimal > 0 else float('inf')
+    
+    # LTV = ARPU × Customer Lifespan
+    ltv = arpu * customer_lifespan_months if customer_lifespan_months != float('inf') else float('inf')
+    
+    # Payback period = CAC / ARPU (months to recover acquisition cost)
+    payback_period = current_cac / arpu if arpu > 0 and current_cac != float('inf') else float('inf')
+    
+    # LTV:CAC ratio
+    ltv_cac_ratio = ltv / current_cac if current_cac != float('inf') and current_cac > 0 and ltv != float('inf') else float('inf')
+    
+    # Format display values
+    ltv_display = f"₱{ltv:,.2f}" if ltv != float('inf') else "∞"
+    lifespan_display = f"{customer_lifespan_months:.1f} months" if customer_lifespan_months != float('inf') else "∞"
+    payback_display = f"{payback_period:.1f} months" if payback_period != float('inf') else "∞"
+    ratio_display = f"{ltv_cac_ratio:.1f}:1" if ltv_cac_ratio != float('inf') else "∞:1"
+    current_cac_display = f"₱{current_cac:,.2f}" if current_cac != float('inf') else "∞"
+    
+    analysis = f"""CHURN IMPACT ANALYSIS - {hypothetical_monthly_churn_rate}% Monthly Churn
+
+SCENARIO RESULTS:
+- Monthly churn rate: {hypothetical_monthly_churn_rate}%
+- Customer lifespan: {lifespan_display}
+- Customer LTV: {ltv_display}
+- Payback period: {payback_display}
+- LTV:CAC ratio: {ratio_display}
+
+BASELINE METRICS:
+- Current monthly churn: {current_avg_churn_rate:.1f}%
+- ARPU: ₱{arpu:,.2f}/month
+- CAC: {current_cac_display}
+
+KEY INSIGHT: Payback period remains {payback_display} regardless of churn rate.
+LTV changes significantly: at {hypothetical_monthly_churn_rate}% churn, each customer generates {ltv_display} over their lifetime."""
+
+    # Health assessment
+    if hypothetical_monthly_churn_rate <= 5:
+        analysis += "\n\n✅ HEALTHY churn rate for most businesses"
+    elif hypothetical_monthly_churn_rate <= 10:
+        analysis += "\n\n⚠️ MODERATE churn rate - monitor retention"
+    else:
+        analysis += "\n\n❌ HIGH churn rate - focus on retention immediately"
+
+    return analysis
+
+
+@tool
+def churn_scenario_comparison(churn_rates_list=[2, 5, 10, 15, 20]):
+    """Compare multiple churn rate scenarios side by side.
+    
+    Args:
+        churn_rates_list: List of monthly churn rates to compare (as percentages)
+    """
+    onboarding = get_onboarding_data()
+    monthly_data = get_monthly_financial_data()
+    
+    if not monthly_data:
+        return "No monthly financial data available for churn scenario comparison."
+    
+    # Get current metrics
+    recent_months = monthly_data[-3:] if len(monthly_data) >= 3 else monthly_data
+    avg_revenue = sum(month['revenue'] for month in recent_months) / len(recent_months)
+    avg_active_customers = sum(month['active_customers'] for month in recent_months) / len(recent_months)
+    arpu = avg_revenue / avg_active_customers if avg_active_customers > 0 else 0
+    
+    recent_cac, recent_marketing, recent_new_customers = calculate_cac_helper(monthly_data, 3)
+    
+    analysis = f"""CHURN SCENARIO COMPARISON
+
+BASELINE METRICS:
+- ARPU: ₱{arpu:,.2f}/month
+- CAC: ₱{recent_cac:,.2f if recent_cac != float('inf') else '∞'}
+
+SCENARIOS:"""
+    
+    for churn_rate in churn_rates_list:
+        churn_decimal = churn_rate / 100
+        lifespan = 1 / churn_decimal if churn_decimal > 0 else float('inf')
+        ltv = arpu * lifespan if lifespan != float('inf') else float('inf')
+        payback = recent_cac / arpu if arpu > 0 and recent_cac != float('inf') else float('inf')
+        ltv_cac = ltv / recent_cac if ltv != float('inf') and recent_cac != float('inf') and recent_cac > 0 else float('inf')
+        
+        ltv_display = f"₱{ltv:,.2f}" if ltv != float('inf') else "∞"
+        payback_display = f"{payback:.1f}mo" if payback != float('inf') else "∞"
+        ratio_display = f"{ltv_cac:.1f}:1" if ltv_cac != float('inf') else "∞:1"
+        
+        analysis += f"\n{churn_rate:2.0f}% churn: {lifespan:4.1f}mo lifespan → LTV {ltv_display:>12} → Payback {payback_display:>6} → Ratio {ratio_display:>6}"
+    
+    analysis += f"\n\nKEY INSIGHTS:"
+    analysis += f"\n- Payback period is constant at {payback:.1f} months (independent of churn)"
+    analysis += f"\n- LTV increases dramatically as churn decreases"
+    analysis += f"\n- Each 1% reduction in churn extends customer lifespan significantly"
+    
+    return analysis
+
 # Add the new tools to the tools list
 tools = [
     get_financial_summary, 
@@ -1072,5 +1244,6 @@ tools = [
     fundraising_analysis,
     marketing_scaling_analysis,
     expense_optimization_analysis,
-    simulate_expense_growth_scenarios
+    analyze_churn_impact,
+    churn_scenario_comparison
 ]
