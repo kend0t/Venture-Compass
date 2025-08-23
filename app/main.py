@@ -7,8 +7,9 @@ from uuid import uuid4
 from fastapi.responses import StreamingResponse
 import json
 
-# Import chatbot engine
+# Import chatbot engine and error logging
 from core import app as chatbot_app
+from logger import log_error
 from langchain_core.messages import HumanMessage, AIMessage
 
 # Initialize FastAPI app
@@ -23,7 +24,7 @@ api.add_middleware(
     allow_headers=["*"],
 )
 
-# Models
+# Models (keep existing models)
 class ChatMessage(BaseModel):
     role: str  # "user" or "assistant"
     content: str
@@ -72,16 +73,25 @@ async def health_check():
 @api.post("/start-session")
 async def start_session():
     """Create a new chat session (thread_id)."""
-    session_id = str(uuid4())
-    conversation_configs[session_id] = {"configurable": {"thread_id": session_id}}
-    conversation_history[session_id] = []
-    return {"thread_id": session_id}
+    try:
+        session_id = str(uuid4())
+        conversation_configs[session_id] = {"configurable": {"thread_id": session_id}}
+        conversation_history[session_id] = []
+        return {"thread_id": session_id}
+    except Exception as e:
+        log_error(
+            error_type="SESSION_CREATION_ERROR",
+            error_message=f"Failed to create session: {str(e)}",
+            context={"endpoint": "/start-session"}
+        )
+        raise HTTPException(status_code=500, detail="Failed to create session")
 
 @api.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest):
     """Normal chat endpoint (non-streaming)."""
+    thread_id = request.thread_id or str(uuid4())
+    
     try:
-        thread_id = request.thread_id or str(uuid4())
         thread_config = get_thread_config(thread_id)
 
         # Enhance query based on keywords
@@ -97,6 +107,12 @@ async def chat_endpoint(request: ChatRequest):
                 response_content += msg.content
 
         if not response_content:
+            log_error(
+                error_type="EMPTY_RESPONSE_ERROR",
+                error_message="Chatbot returned empty response",
+                context={"user_message": request.message, "enhanced_query": enhanced_query},
+                thread_id=thread_id
+            )
             response_content = "I'm having trouble processing your request. Please try again."
 
         # Save history
@@ -110,14 +126,24 @@ async def chat_endpoint(request: ChatRequest):
         )
 
     except Exception as e:
+        log_error(
+            error_type="CHAT_ENDPOINT_ERROR",
+            error_message=f"Error in chat endpoint: {str(e)}",
+            context={
+                "user_message": request.message,
+                "endpoint": "/chat"
+            },
+            thread_id=thread_id
+        )
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
 @api.post("/chat/stream")
 async def chat_stream_endpoint(request: ChatRequest):
     """Streaming chat endpoint for real-time responses."""
     async def generate_stream():
+        thread_id = request.thread_id or str(uuid4())
+        
         try:
-            thread_id = request.thread_id or str(uuid4())
             thread_config = get_thread_config(thread_id)
 
             enhanced_query = request.message
@@ -146,9 +172,18 @@ async def chat_stream_endpoint(request: ChatRequest):
             yield f"data: {json.dumps({'done': True})}\n\n"
 
         except Exception as e:
+            log_error(
+                error_type="STREAM_ENDPOINT_ERROR",
+                error_message=f"Error in streaming endpoint: {str(e)}",
+                context={
+                    "user_message": request.message,
+                    "endpoint": "/chat/stream"
+                },
+                thread_id=thread_id
+            )
             error_chunk = {
                 "error": str(e),
-                "thread_id": request.thread_id,
+                "thread_id": thread_id,
                 "timestamp": datetime.now().isoformat()
             }
             yield f"data: {json.dumps(error_chunk)}\n\n"
@@ -171,6 +206,12 @@ async def get_chat_history(thread_id: str):
             thread_id=thread_id
         )
     except Exception as e:
+        log_error(
+            error_type="HISTORY_RETRIEVAL_ERROR",
+            error_message=f"Error retrieving history: {str(e)}",
+            context={"endpoint": "/chat/history"},
+            thread_id=thread_id
+        )
         raise HTTPException(status_code=500, detail=f"Error retrieving history: {str(e)}")
 
 @api.delete("/chat/history/{thread_id}")
@@ -181,6 +222,12 @@ async def clear_chat_history(thread_id: str):
         conversation_configs.pop(thread_id, None)
         return {"message": f"History cleared for thread {thread_id}"}
     except Exception as e:
+        log_error(
+            error_type="HISTORY_CLEAR_ERROR",
+            error_message=f"Error clearing history: {str(e)}",
+            context={"endpoint": "/chat/history (DELETE)"},
+            thread_id=thread_id
+        )
         raise HTTPException(status_code=500, detail=f"Error clearing history: {str(e)}")
 
 if __name__ == "__main__":

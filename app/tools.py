@@ -1,87 +1,121 @@
 from db import get_connection
 from langchain.tools import tool
 import math
+from logger import log_error
 
 def get_onboarding_data():
     """Helper function to retrieve initial financial data (baseline/expected cashflow)"""
-    conn = get_connection()
-    cur = conn.cursor()
+    conn, cur = None, None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
 
-    cur.execute("""
-        SELECT 
-            startup_name,
-            industry,
-            target_revenue,
-            product_dev_expenses as planned_product_dev,
-            manpower_expenses as planned_manpower,
-            marketing_expenses as planned_marketing,
-            operations_expenses as planned_operations,
-            initial_cash,
-            initial_customers,
-            current_employees,
-            target_runway_months,
-            onboarding_date
-        FROM onboarding_data
-        LIMIT 1
-    """)
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    
-    return {
-        "startup_name": row[0],
-        "industry": row[1],
-        "target_revenue": float(row[2]),
-        "planned_product_dev": float(row[3]),
-        "planned_manpower": float(row[4]),
-        "planned_marketing": float(row[5]),
-        "planned_operations": float(row[6]),
-        "initial_cash": float(row[7]),
-        "initial_customers": int(row[8]),
-        "current_employees": int(row[9]),
-        "target_runway_months": int(row[10]),
-        "onboarding_date": row[11]
-    }
+        cur.execute("""
+            SELECT 
+                startup_namee,
+                industry,
+                target_revenue,
+                product_dev_expenses AS planned_product_dev,
+                manpower_expenses AS planned_manpower,
+                marketing_expenses AS planned_marketing,
+                operations_expenses AS planned_operations,
+                initial_cash,
+                initial_customers,
+                current_employees,
+                target_runway_months,
+                onboarding_date
+            FROM onboarding_data
+            LIMIT 1
+        """)
+        row = cur.fetchone()
+
+        if not row:
+            log_error("No onboarding_data found in DB")
+            return None
+
+        return {
+            "startup_name": row[0],
+            "industry": row[1],
+            "target_revenue": float(row[2]),
+            "planned_product_dev": float(row[3]),
+            "planned_manpower": float(row[4]),
+            "planned_marketing": float(row[5]),
+            "planned_operations": float(row[6]),
+            "initial_cash": float(row[7]),
+            "initial_customers": int(row[8]),
+            "current_employees": int(row[9]),
+            "target_runway_months": int(row[10]),
+            "onboarding_date": row[11]
+        }
+
+    except Exception as e:
+        log_error(
+        error_type="DB_ERROR",
+        error_message=f"Error in get_onboarding_data: {str(e)}",
+        context={"function": "get_onboarding_data"}
+    )
+        return None
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+
+
+
 
 def get_monthly_financial_data():
     """Helper function to retrieve monthly iterations of financial data"""
-    conn = get_connection()
-    cur = conn.cursor()
+    conn, cur = None, None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
 
-    cur.execute("""
-        SELECT 
-            date,
-            revenue,
-            product_dev_expenses,
-            manpower_expenses,
-            marketing_expenses,
-            operations_expenses,
-            new_customers,
-            active_customers,
-            other_expenses
-        FROM monthly_financial_data
-        ORDER BY date ASC  -- Chronological order from onboarding
-    """)
-    
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    
-    monthly_data = []
-    for row in rows:
-        monthly_data.append({
-            "date": row[0],
-            "revenue": float(row[1]),
-            "product_dev_expenses": float(row[2]),
-            "manpower_expenses": float(row[3]),
-            "marketing_expenses": float(row[4]),
-            "operations_expenses": float(row[5]),
-            "new_customers": int(row[6]),
-            "active_customers": int(row[7]),
-            "other_expenses": float(row[8])
-        })
-    
-    return monthly_data
+        cur.execute("""
+            SELECT 
+                date,
+                revenue,
+                product_dev_expenses,
+                manpower_expenses,
+                marketing_expenses,
+                operations_expenses,
+                new_customers,
+                active_customers,
+                other_expenses
+            FROM monthly_financial_data
+            ORDER BY date ASC
+        """)
+        rows = cur.fetchall()
+
+        if not rows:
+            log_error("No monthly_financial_data found in DB")
+            return []
+
+        monthly_data = []
+        for row in rows:
+            monthly_data.append({
+                "date": row[0],
+                "revenue": float(row[1]),
+                "product_dev_expenses": float(row[2]),
+                "manpower_expenses": float(row[3]),
+                "marketing_expenses": float(row[4]),
+                "operations_expenses": float(row[5]),
+                "new_customers": int(row[6]),
+                "active_customers": int(row[7]),
+                "other_expenses": float(row[8])
+            })
+
+        return monthly_data
+
+    except Exception as e:
+        log_error(
+        error_type="DB_ERROR",
+        error_message=f"Error in get_monthly_financial_data: {str(e)}",
+        context={"function": "get_monthly_financial_data"}
+    )
+        return []
+
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
 
 def calculate_customer_churn(monthly_data, onboarding_data):
     """Calculate customer churn metrics based on monthly data"""
