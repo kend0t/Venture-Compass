@@ -1048,57 +1048,6 @@ EXPENSE BREAKDOWN:
     return analysis
 
 @tool
-def simulate_expense_growth_scenarios(expense_growth_rate, revenue_growth_rate=0):
-    """Simulate impact of expense growth with flat or growing revenue"""
-    monthly_data = get_monthly_financial_data()
-    current_cash, _ = calculate_current_cash()
-    
-    if not monthly_data:
-        return "No historical data available for simulation"
-    
-    latest_month = monthly_data[-1]
-    current_revenue = latest_month['monthly_revenue']
-    current_expenses = (latest_month['product_development_expense'] + latest_month['manpower_expense'] + 
-                       latest_month['marketing_expense'] + latest_month['operations_expense'] + latest_month['other_expenses'])
-    
-    analysis = f"""EXPENSE GROWTH SIMULATION:
-
-CURRENT STATE:
-- Monthly revenue: ₱{current_revenue:,.2f}
-- Monthly expenses: ₱{current_expenses:,.2f}
-- Current margin: {((current_revenue - current_expenses)/current_revenue*100) if current_revenue > 0 else -100:.1f}%
-
-SCENARIOS (12-month projection):"""
-    
-    cash_position = current_cash
-    
-    for month in range(1, 13):
-        month_revenue = current_revenue * ((1 + revenue_growth_rate) ** month)
-        month_expenses = current_expenses * ((1 + expense_growth_rate) ** month)
-        net_flow = month_revenue - month_expenses
-        cash_position += net_flow
-        
-        if month <= 6:  # Show first 6 months in detail
-            margin = ((month_revenue - month_expenses) / month_revenue * 100) if month_revenue > 0 else -100
-            analysis += f"\nMonth {month}: Rev ₱{month_revenue:,.2f}, Exp ₱{month_expenses:,.2f}, Margin {margin:.1f}%, Cash ₱{cash_position:,.2f}"
-        
-        if cash_position <= 0:
-            analysis += f"\n⚠️ CASH DEPLETION: Would run out in month {month}"
-            break
-    
-    final_revenue = current_revenue * ((1 + revenue_growth_rate) ** 12)
-    final_expenses = current_expenses * ((1 + expense_growth_rate) ** 12)
-    final_margin = ((final_revenue - final_expenses) / final_revenue * 100) if final_revenue > 0 else -100
-    
-    analysis += f"\n\nYEAR-END PROJECTIONS:"
-    analysis += f"\n- Revenue: ₱{final_revenue:,.2f} ({revenue_growth_rate*100:+.1f}% growth)"
-    analysis += f"\n- Expenses: ₱{final_expenses:,.2f} ({expense_growth_rate*100:+.1f}% growth)"  
-    analysis += f"\n- Final margin: {final_margin:.1f}%"
-    analysis += f"\n- Cash position: ₱{cash_position:,.2f}"
-    
-    return analysis
-
-@tool
 def analyze_churn_impact(hypothetical_monthly_churn_rate):
     """Analyze how a specific churn rate affects payback period, LTV, and unit economics.
     
