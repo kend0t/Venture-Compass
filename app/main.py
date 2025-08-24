@@ -11,6 +11,7 @@ from tools import (
     calculate_customer_churn, 
     get_monthly_financial_data, 
     get_onboarding_data, 
+    calculate_current_cash
 )
 from db import get_connection
 from core import create_chatbot_app
@@ -260,37 +261,15 @@ async def clear_chat_history(thread_id: str):
         )
         raise HTTPException(status_code=500, detail=f"Error clearing history: {str(e)}")
 
-@api.get("/db/{table_name}")
-async def get_table_data(table_name: str, limit: int = 10):
-    """Retrieve rows from a given database table."""
-    try:
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(f"SELECT * FROM {table_name} LIMIT %s;", (limit,))
-                colnames = [desc[0] for desc in cur.description] 
-                rows = cur.fetchall()
-
-        # Format rows into list of dicts
-        results = [dict(zip(colnames, row)) for row in rows]
-        return {"table": table_name, "rows": results}
-
-    except Exception as e:
-        log_error(
-            error_type="RETRIEVE_DATA_ERROR",
-            error_message=f"Error retrieving data: {str(e)}",
-            context={"endpoint": "/db/table_name (GET)"},
-        )
-        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
-
-@api.get("/db/cashflow/{startup_name}")
-async def get_cashflow_data(startup_name: str):
+@api.post("/db/cashflow/{startup_name}")
+async def get_cashflow_data(req: DashboardRequest):
     """
     Monthly cash flow analysis for a specific startup
     Returns: cash in (revenue), cash out (expenses), cash balance over time
     """
     try:
-        onboarding = get_onboarding_data(startup_name)
-        monthly_data = get_monthly_financial_data(startup_name)
+        onboarding = get_onboarding_data(req.startup_name)
+        monthly_data = get_monthly_financial_data(req.startup_name)
         
         if not onboarding:
             raise HTTPException(status_code=404, detail="No onboarding data found")
@@ -342,14 +321,14 @@ async def get_cashflow_data(startup_name: str):
         log_error("API_ERROR", f"Error in /cashflow: {str(e)}", {"endpoint": "/cashflow"})
         raise HTTPException(status_code=500, detail="Internal server error")
     
-@api.get("/db/revenue/{startup_name}")
-async def get_revenue_data(startup_name: str):
+@api.post("/db/revenue/{startup_name}")
+async def get_revenue_data(req: DashboardRequest):
     """
     Revenue analysis including MRR growth, churn, ARPU, and NRR for a specific startup
     """
     try:
-        onboarding = get_onboarding_data(startup_name)
-        monthly_data = get_monthly_financial_data(startup_name)
+        onboarding = get_onboarding_data(req.startup_name)
+        monthly_data = get_monthly_financial_data(req.startup_name)
 
         if not onboarding or not monthly_data:
             raise HTTPException(status_code=404, detail="Insufficient data for revenue analysis")
@@ -530,6 +509,180 @@ def get_dashboard_overview(req: DashboardRequest):
             context={"endpoint": "/db/overview (POST)"},
         )
         raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
+    
+@api.post("/db/expenses/{startup_name}")
+async def get_expenses_data(req: DashboardRequest):
+    """
+    Expense breakdown showing each category as percentage of total
+    """
+    try:
+        onboarding = get_onboarding_data(req.startup_name)
+        monthly_data = get_monthly_financial_data(req.startup_name)
+
+        if not onboarding or not monthly_data:
+            raise HTTPException(status_code=404, detail="Insufficient data for revenue analysis")
+
+
+        expenses_data = []
+        for month in monthly_data:
+            total_expenses = (
+                month['product_dev_expenses'] +
+                month['manpower_expenses'] +
+                month['marketing_expenses'] +
+                month['operations_expenses'] +
+                month['other_expenses']
+            )
+
+            # Percentages
+            if total_expenses > 0:
+                product_dev_pct = (month['product_dev_expenses'] / total_expenses) * 100
+                manpower_pct = (month['manpower_expenses'] / total_expenses) * 100
+                marketing_pct = (month['marketing_expenses'] / total_expenses) * 100
+                operations_pct = (month['operations_expenses'] / total_expenses) * 100
+                other_pct = (month['other_expenses'] / total_expenses) * 100
+            else:
+                product_dev_pct = manpower_pct = marketing_pct = operations_pct = other_pct = 0
+
+            expenses_data.append({
+                "month": month['date'].strftime('%Y-%m'),
+                "total_expenses": total_expenses,
+                "product_dev_amount": month['product_dev_expenses'],
+                "product_dev_pct": product_dev_pct,
+                "manpower_amount": month['manpower_expenses'],
+                "manpower_pct": manpower_pct,
+                "marketing_amount": month['marketing_expenses'],
+                "marketing_pct": marketing_pct,
+                "operations_amount": month['operations_expenses'],
+                "operations_pct": operations_pct,
+                "other_amount": month['other_expenses'],
+                "other_pct": other_pct
+            })
+
+        recent_months = expenses_data[-3:] if len(expenses_data) >= 3 else expenses_data
+        avg_breakdown = {
+            "product_dev_pct": sum(m['product_dev_pct'] for m in recent_months) / len(recent_months),
+            "manpower_pct": sum(m['manpower_pct'] for m in recent_months) / len(recent_months),
+            "marketing_pct": sum(m['marketing_pct'] for m in recent_months) / len(recent_months),
+            "operations_pct": sum(m['operations_pct'] for m in recent_months) / len(recent_months),
+            "other_pct": sum(m['other_pct'] for m in recent_months) / len(recent_months),
+            "total_avg_expenses": sum(m['total_expenses'] for m in recent_months) / len(recent_months)
+        }
+
+        return {
+            "data": expenses_data,
+            "summary": avg_breakdown
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_error("API_ERROR", f"Error in /api/expenses: {str(e)}", {"endpoint": "/api/expenses"})
+        raise HTTPException(status_code=500, detail="Internal server error")
+    
+@api.post("/db/runway/{startup_name}")
+async def get_runway_data(req: DashboardRequest):
+    """
+    Runway projections with current, optimistic, and pessimistic scenarios
+    """
+    try:
+        onboarding = get_onboarding_data(req.startup_name)
+        monthly_data = get_monthly_financial_data(req.startup_name)
+        current_cash, month_elapsed = calculate_current_cash(req.startup_name)
+
+        if not onboarding or not monthly_data or not current_cash:
+            raise HTTPException(status_code=404, detail="Insufficient data for runway analysis")
+
+        # Calculate averages
+        if monthly_data:
+            recent_months = monthly_data[-3:] if len(monthly_data) >= 3 else monthly_data
+            avg_revenue = sum(m['revenue'] for m in recent_months) / len(recent_months)
+            avg_expenses = sum(
+                m['product_dev_expenses'] + m['manpower_expenses'] +
+                m['marketing_expenses'] + m['operations_expenses'] + m['other_expenses']
+                for m in recent_months
+            ) / len(recent_months)
+        else:
+            avg_revenue = onboarding['target_revenue']
+            avg_expenses = (
+                onboarding['planned_product_dev'] + onboarding['planned_manpower'] +
+                onboarding['planned_marketing'] + onboarding['planned_operations']
+            )
+
+        # Calculate scenario parameters
+        current_net_flow = avg_revenue - avg_expenses
+        optimistic_revenue = avg_revenue * 1.3
+        optimistic_net_flow = optimistic_revenue - avg_expenses
+        pessimistic_expenses = avg_expenses * 1.2
+        pessimistic_net_flow = avg_revenue - pessimistic_expenses
+
+        # Calculate runway months for each scenario
+        current_runway_months = float('inf') if current_net_flow >= 0 else math.floor(current_cash / abs(current_net_flow))
+        optimistic_runway_months = float('inf') if optimistic_net_flow >= 0 else math.floor(current_cash / abs(optimistic_net_flow))
+        pessimistic_runway_months = float('inf') if pessimistic_net_flow >= 0 else math.floor(current_cash / abs(pessimistic_net_flow))
+
+        # Generate monthly projections
+        projection_months = 24
+        runway_projections = []
+        
+        for month in range(1, projection_months + 1):
+            # Calculate projected cash for each scenario
+            # starting + (revenue - expenses) per month
+            current_projected_cash = current_cash + (avg_revenue - avg_expenses) * month
+            optimistic_projected_cash = current_cash + (optimistic_revenue - avg_expenses) * month
+            pessimistic_projected_cash = current_cash + (avg_revenue - pessimistic_expenses) * month
+
+            # Calculate remaining runway months
+            current_runway_remaining = max(0, current_runway_months - month) if current_runway_months != float('inf') else float('inf')
+            optimistic_runway_remaining = max(0, optimistic_runway_months - month) if optimistic_runway_months != float('inf') else float('inf')
+            pessimistic_runway_remaining = max(0, pessimistic_runway_months - month) if pessimistic_runway_months != float('inf') else float('inf')
+
+            runway_projections.append({
+                "month": month,
+                "current_cash": max(0, current_projected_cash),
+                "optimistic_cash": max(0, optimistic_projected_cash),
+                "pessimistic_cash": max(0, pessimistic_projected_cash),
+                "current_runway_remaining": current_runway_remaining,
+                "optimistic_runway_remaining": optimistic_runway_remaining,
+                "pessimistic_runway_remaining": pessimistic_runway_remaining
+            })
+
+            # Stop projection when all scenarios reach zero cash
+            if (current_projected_cash <= 0 and optimistic_projected_cash <= 0 and pessimistic_projected_cash <= 0):
+                break
+
+        return {
+            "data": runway_projections,
+            "summary": {
+                "current_cash": current_cash,
+                "avg_monthly_revenue": avg_revenue,
+                "avg_monthly_expenses": avg_expenses,
+                "current_net_flow": current_net_flow,
+                "scenarios": {
+                    "current": {
+                        "runway_months": None if current_runway_months == float('inf') else current_runway_months,
+                        "net_flow": current_net_flow,
+                        "description": "Current trajectory"
+                    },
+                    "optimistic": {
+                        "runway_months": None if optimistic_runway_months == float('inf') else optimistic_runway_months,
+                        "net_flow": optimistic_net_flow,
+                        "description": "Revenue +30%"
+                    },
+                    "pessimistic": {
+                        "runway_months": None if pessimistic_runway_months == float('inf') else pessimistic_runway_months,
+                        "net_flow": pessimistic_net_flow,
+                        "description": "Expenses +20%"
+                    }
+                }
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_error("API_ERROR", f"Error in /api/runway: {str(e)}", {"endpoint": "/api/runway"})
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 
 if __name__ == "__main__":
     import uvicorn
