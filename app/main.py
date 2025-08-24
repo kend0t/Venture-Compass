@@ -1,3 +1,4 @@
+import math
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -6,12 +7,16 @@ from datetime import datetime
 from uuid import uuid4
 from fastapi.responses import StreamingResponse, JSONResponse
 import json
+from tools import (
+    calculate_customer_churn, 
+    get_monthly_financial_data, 
+    get_onboarding_data, 
+)
 from db import get_connection
-from core import app as chatbot_app
+from core import create_chatbot_app
 from logger import log_error
 from langchain_core.messages import HumanMessage, AIMessage
-# Import the tools module to access startup context functions
-from tools import set_startup_context, get_startup_name, get_onboarding_data,get_monthly_financial_data,calculate_customer_churn, calculate_current_cash, get_current_metrics
+import psycopg2.extras
 
 # Initialize FastAPI app
 api = FastAPI(title="Chatbot API", description="Financial Advisor Chatbot API", version="1.0.0")
@@ -34,7 +39,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     thread_id: Optional[str] = None  # will auto-generate if not given
-    startup_name: Optional[str] = None  # NEW: Accept startup_name in chat requests
+    startup_name: str  # REQUIRED: startup name for context
 
 class ChatResponse(BaseModel):
     response: str
@@ -45,15 +50,10 @@ class ChatHistoryResponse(BaseModel):
     messages: List[ChatMessage]
     thread_id: str
 
-# NEW: Startup context models
-class StartupContextRequest(BaseModel):
+class DashboardRequest(BaseModel):
     startup_name: str
 
-class StartupContextResponse(BaseModel):
-    startup_name: str
-    message: str
-
-# Storage for sessions + history
+# Storage for sessions + history (per thread_id)
 conversation_configs = {}
 conversation_history = {}
 
@@ -80,41 +80,6 @@ async def root():
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.now()}
 
-# NEW: Startup context management endpoints
-@api.post("/startup/context", response_model=StartupContextResponse)
-async def set_startup_context_endpoint(request: StartupContextRequest):
-    """Set the global startup context for all tools."""
-    try:
-        set_startup_context(request.startup_name)
-        return StartupContextResponse(
-            startup_name=request.startup_name,
-            message=f"Startup context set to: {request.startup_name}"
-        )
-    except Exception as e:
-        log_error(
-            error_type="CONTEXT_SET_ERROR",
-            error_message=f"Failed to set startup context: {str(e)}",
-            context={"endpoint": "/startup/context", "startup_name": request.startup_name}
-        )
-        raise HTTPException(status_code=500, detail="Failed to set startup context")
-
-@api.get("/startup/context")
-async def get_startup_context_endpoint():
-    """Get the current startup context."""
-    try:
-        current_startup = get_startup_name()
-        return {
-            "startup_name": current_startup,
-            "message": f"Current startup context: {current_startup or 'Not set'}"
-        }
-    except Exception as e:
-        log_error(
-            error_type="CONTEXT_GET_ERROR",
-            error_message=f"Failed to get startup context: {str(e)}",
-            context={"endpoint": "/startup/context (GET)"}
-        )
-        raise HTTPException(status_code=500, detail="Failed to get startup context")
-
 @api.post("/start-session")
 async def start_session():
     """Create a new chat session (thread_id)."""
@@ -136,11 +101,13 @@ async def chat_endpoint(request: ChatRequest):
     """Normal chat endpoint (non-streaming)."""
     thread_id = request.thread_id or str(uuid4())
     
+    # Validate startup_name is provided
+    if not request.startup_name:
+        raise HTTPException(status_code=400, detail="startup_name is required")
+    
     try:
-        # NEW: Set startup context if provided
-        if request.startup_name:
-            set_startup_context(request.startup_name)
-            
+        # Create chatbot app instance with startup context
+        chatbot_app = create_chatbot_app(request.startup_name)
         thread_config = get_thread_config(thread_id)
 
         # Enhance query based on keywords
@@ -193,11 +160,19 @@ async def chat_stream_endpoint(request: ChatRequest):
     async def generate_stream():
         thread_id = request.thread_id or str(uuid4())
         
+        # Validate startup_name is provided
+        if not request.startup_name:
+            error_chunk = {
+                "error": "startup_name is required",
+                "thread_id": thread_id,
+                "timestamp": datetime.now().isoformat()
+            }
+            yield f"data: {json.dumps(error_chunk)}\n\n"
+            return
+        
         try:
-            # NEW: Set startup context if provided
-            if request.startup_name:
-                set_startup_context(request.startup_name)
-                
+            # Create chatbot app instance with startup context
+            chatbot_app = create_chatbot_app(request.startup_name)
             thread_config = get_thread_config(thread_id)
 
             enhanced_query = request.message
@@ -305,19 +280,15 @@ async def get_table_data(table_name: str, limit: int = 10):
             error_message=f"Error retrieving data: {str(e)}",
             context={"endpoint": "/db/table_name (GET)"},
         )
-        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")\
+        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
 
-@api.get("/cashflow")
-async def get_cashflow_data():
+@api.get("/db/cashflow/{startup_name}")
+async def get_cashflow_data(startup_name: str):
     """
-    Monthly cash flow analysis
+    Monthly cash flow analysis for a specific startup
     Returns: cash in (revenue), cash out (expenses), cash balance over time
     """
     try:
-        startup_name = get_startup_name()
-        if not startup_name:
-            raise HTTPException(status_code=400, detail="No startup name set")
-        
         onboarding = get_onboarding_data(startup_name)
         monthly_data = get_monthly_financial_data(startup_name)
         
@@ -350,10 +321,10 @@ async def get_cashflow_data():
             running_cash_balance += net_flow
             
             cashflow_data.append({
-                "month": month['date'].strftime('%Y-%m'), # y-axis
+                "month": month['date'].strftime('%Y-%m'),
                 "cash_in": cash_in,
                 "cash_out": cash_out,
-                "cash_balance": running_cash_balance, # x-axis
+                "cash_balance": running_cash_balance,
                 "net_flow": net_flow
             })
         return {
@@ -371,16 +342,12 @@ async def get_cashflow_data():
         log_error("API_ERROR", f"Error in /cashflow: {str(e)}", {"endpoint": "/cashflow"})
         raise HTTPException(status_code=500, detail="Internal server error")
     
-@api.get("/revenue")
-async def get_revenue_data():
+@api.get("/db/revenue/{startup_name}")
+async def get_revenue_data(startup_name: str):
     """
-    Revenue analysis including MRR growth, churn, ARPU, and NRR
+    Revenue analysis including MRR growth, churn, ARPU, and NRR for a specific startup
     """
     try:
-        startup_name = get_startup_name()
-        if not startup_name:
-            raise HTTPException(status_code=400, detail="No startup context set")
-
         onboarding = get_onboarding_data(startup_name)
         monthly_data = get_monthly_financial_data(startup_name)
 
@@ -432,7 +399,7 @@ async def get_revenue_data():
                 "new_customers": month['new_customers']
             })
 
-         # 3-month summary lang if ever need mo
+         # 3-month summary
         recent_months = revenue_analysis[-3:] if len(revenue_analysis) >= 3 else revenue_analysis
         avg_mrr_growth = sum(m['mrr_growth_pct'] for m in recent_months) / len(recent_months)
         avg_churn = sum(m['churn_rate'] for m in recent_months) / len(recent_months)
@@ -455,8 +422,114 @@ async def get_revenue_data():
     except Exception as e:
         log_error("API_ERROR", f"Error in /revenue: {str(e)}", {"endpoint": "/revenue"})
         raise HTTPException(status_code=500, detail="Internal server error")
+
+# Dashboard endpoint for dashboard overview
+@api.post("/db/overview")
+def get_dashboard_overview(req: DashboardRequest):
+    try:
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                retObj = {}
+
+                # current cash - Get initial cash
+                cur.execute("SELECT initial_cash FROM onboarding_data WHERE startup_name = %s LIMIT 1;", (req.startup_name,))
+                rows = cur.fetchone()
+
+                if not rows:
+                    raise HTTPException(status_code=404, detail="No onboarding data found for startup")
+
+                current_cash = float(rows['initial_cash'])
+
+                # Calculate current cash by adding monthly cash flows
+                monthly_data = get_monthly_financial_data(req.startup_name)
     
-    
+                for month in monthly_data:
+                    total_expenses = (month['product_dev_expenses'] + 
+                                    month['manpower_expenses'] + 
+                                    month['marketing_expenses'] + 
+                                    month['operations_expenses'] + 
+                                    month['other_expenses'])
+                    
+                    monthly_cash_flow = month['revenue'] - total_expenses
+                    current_cash += monthly_cash_flow
+
+                retObj['current_cash'] = current_cash
+
+                # monthly burn
+                cur.execute("SELECT AVG(product_dev_expenses + manpower_expenses + operations_expenses + other_expenses + marketing_expenses) AS avg_monthly_burn FROM monthly_financial_data WHERE startup_name = %s;", (req.startup_name,))
+                rows = cur.fetchone()
+
+                retObj['monthly_burn'] = float(rows['avg_monthly_burn']) if rows['avg_monthly_burn'] else 0
+
+                # mrr
+                cur.execute("SELECT AVG(revenue) AS mrr FROM monthly_financial_data WHERE startup_name = %s;", (req.startup_name,))
+                rows = cur.fetchone()
+
+                retObj['mrr'] = float(rows['mrr']) if rows['mrr'] else 0
+
+                # runway - Handle case where net_burn might be negative or zero
+                recent_months = monthly_data[-3:] if len(monthly_data) >= 3 else monthly_data
+                if not recent_months:  # Handle empty monthly_data
+                    retObj['runway'] = float('inf')
+                else:
+                    avg_revenue = sum(month['revenue'] for month in recent_months) / len(recent_months)
+                    avg_expenses = sum(month['product_dev_expenses'] + month['manpower_expenses'] + 
+                                    month['marketing_expenses'] + month['operations_expenses'] + month['other_expenses'] 
+                                    for month in recent_months) / len(recent_months)
+        
+                    net_burn = avg_expenses - avg_revenue
+                    
+                    # Handle negative net_burn (profitable) or zero burn
+                    if net_burn <= 0:
+                        retObj['runway'] = float('inf')  # Company is profitable or breaking even
+                    else:
+                        runway = math.floor(current_cash / net_burn)
+                        retObj['runway'] = runway
+
+                # arr
+                retObj['arr'] = retObj['mrr'] * 12
+
+                # ltv:cac
+                onboarding = get_onboarding_data(req.startup_name)
+                churn_data = calculate_customer_churn(monthly_data, onboarding)
+
+                # Handle empty churn_data
+                if not churn_data:
+                    retObj['ltv'] = 0
+                    retObj['cac'] = 0
+                    retObj['payback_period'] = float('inf')
+                else:
+                    recent_churn_data = churn_data[-3:] if len(churn_data) >= 3 else churn_data
+                    avg_monthly_churn_rate = sum(month['churn_rate'] for month in recent_churn_data) / len(recent_churn_data) / 100
+                    avg_active_customers = sum(month['active_customers'] for month in recent_months) / len(recent_months)
+
+                    arpu = avg_revenue / avg_active_customers if avg_active_customers > 0 else 0
+
+                    customer_lifespan = (1 / avg_monthly_churn_rate) if avg_monthly_churn_rate > 0 else float('inf')
+                    ltv = arpu * customer_lifespan if customer_lifespan != float('inf') else float('inf')
+                    
+                    retObj['ltv'] = ltv
+
+                    # CAC calculation
+                    recent_marketing = sum(month['marketing_expenses'] for month in recent_months)
+                    recent_new_customers = sum(month['new_customers'] for month in recent_months)
+                    recent_cac = (recent_marketing / recent_new_customers) if recent_new_customers > 0 else float('inf')
+
+                    retObj['cac'] = recent_cac
+
+                    # payback period
+                    payback_period = (recent_cac / arpu) if arpu > 0 and recent_cac != float('inf') else float('inf')
+                    retObj['payback_period'] = payback_period
+
+                return retObj
+
+    except Exception as e:
+        log_error(
+            error_type="RETRIEVE_DATA_ERROR",
+            error_message=f"Error retrieving data: {str(e)}",
+            context={"endpoint": "/db/overview (POST)"},
+        )
+        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

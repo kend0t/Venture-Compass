@@ -4,24 +4,9 @@ import math
 from logger import log_error
 
 
-_startup_name = None
-
-def set_startup_context(startup_name):
-    """Set the global startup context for all tools"""
-    global _startup_name
-    _startup_name = startup_name
-
-def get_startup_name():
-    """Get the current startup name"""
-    global _startup_name
-    return _startup_name
-
 def get_onboarding_data(startup_name = None):
     """Helper function to retrieve initial financial data (baseline/expected cashflow)"""
-    
-    if startup_name is None:
-        startup_name = get_startup_name()
-        
+    print(f"DEBUG: get_onboarding_data called with startup_name: {startup_name}")
     conn, cur = None, None
     try:
         conn = get_connection()
@@ -81,12 +66,68 @@ def get_onboarding_data(startup_name = None):
         if cur: cur.close()
         if conn: conn.close()
 
+def get_onboarding_data_by_startup(startup_name: str):
+    """Helper function to retrieve initial financial data (baseline/expected cashflow)"""
+    print(f"DEBUG: get_montly_financial_data called with startup_name: {startup_name}")
+    conn, cur = None, None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        cur.execute(f"""
+            SELECT 
+                startup_name,
+                industry,
+                target_revenue,
+                product_dev_expenses AS planned_product_dev,
+                manpower_expenses AS planned_manpower,
+                marketing_expenses AS planned_marketing,
+                operations_expenses AS planned_operations,
+                initial_cash,
+                initial_customers,
+                current_employees,
+                target_runway_months,
+                onboarding_date
+            FROM onboarding_data
+            WHERE startup_name = %s
+            LIMIT 1
+        """, (startup_name,))
+        row = cur.fetchone()
+
+        if not row:
+            log_error("No onboarding_data found in DB")
+            return None
+
+        return {
+            "startup_name": row[0],
+            "industry": row[1],
+            "target_revenue": float(row[2]),
+            "planned_product_dev": float(row[3]),
+            "planned_manpower": float(row[4]),
+            "planned_marketing": float(row[5]),
+            "planned_operations": float(row[6]),
+            "initial_cash": float(row[7]),
+            "initial_customers": int(row[8]),
+            "current_employees": int(row[9]),
+            "target_runway_months": int(row[10]),
+            "onboarding_date": row[11]
+        }
+
+    except Exception as e:
+        log_error(
+        error_type="DB_ERROR",
+        error_message=f"Error in get_onboarding_data: {str(e)}",
+        context={"function": "get_onboarding_data"}
+    )
+        return None
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+
 
 
 def get_monthly_financial_data(startup_name = None):
     """Helper function to retrieve monthly iterations of financial data"""
-    if startup_name is None:
-        startup_name = get_startup_name()
         
     conn, cur = None, None
     try:
@@ -145,6 +186,62 @@ def get_monthly_financial_data(startup_name = None):
         if cur: cur.close()
         if conn: conn.close()
 
+def get_monthly_financial_data_by_startup(startup_name: str):
+    """Helper function to retrieve monthly iterations of financial data"""
+    conn, cur = None, None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        cur.execute(f"""
+            SELECT 
+                date,
+                revenue,
+                product_dev_expenses,
+                manpower_expenses,
+                marketing_expenses,
+                operations_expenses,
+                new_customers,
+                active_customers,
+                other_expenses
+            FROM monthly_financial_data
+            WHERE startup_name = %s
+            ORDER BY date ASC
+        """, (startup_name,))
+        rows = cur.fetchall()
+
+        if not rows:
+            log_error("No monthly_financial_data found in DB")
+            return []
+
+        monthly_data = []
+        for row in rows:
+            monthly_data.append({
+                "date": row[0],
+                "revenue": float(row[1]),
+                "product_dev_expenses": float(row[2]),
+                "manpower_expenses": float(row[3]),
+                "marketing_expenses": float(row[4]),
+                "operations_expenses": float(row[5]),
+                "new_customers": int(row[6]),
+                "active_customers": int(row[7]),
+                "other_expenses": float(row[8])
+            })
+
+        return monthly_data
+
+    except Exception as e:
+        log_error(
+        error_type="DB_ERROR",
+        error_message=f"Error in get_monthly_financial_data: {str(e)}",
+        context={"function": "get_monthly_financial_data"}
+    )
+        return []
+
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+
 def calculate_customer_churn(monthly_data, onboarding_data):
     """Calculate customer churn metrics based on monthly data"""
     if not monthly_data:
@@ -181,9 +278,8 @@ def calculate_customer_churn(monthly_data, onboarding_data):
     
     return churn_data
 
-def calculate_current_cash():
+def calculate_current_cash(startup_name: str):
     """Calculate current cash based on initial cash + all monthly cash flows"""
-    startup_name = get_startup_name()
     onboarding = get_onboarding_data(startup_name)
     monthly_data = get_monthly_financial_data(startup_name)
     
@@ -201,12 +297,11 @@ def calculate_current_cash():
     
     return current_cash, len(monthly_data)
 
-def get_current_metrics():
+def get_current_metrics(startup_name: str):
     """Helper function to get current financial state"""
-    startup_name = get_startup_name()
     onboarding = get_onboarding_data(startup_name)
     monthly_data = get_monthly_financial_data(startup_name)
-    current_cash, months_elapsed = calculate_current_cash()
+    current_cash, months_elapsed = calculate_current_cash(startup_name)
     
     if monthly_data:
         latest = monthly_data[-3:] if len(monthly_data) >= 3 else monthly_data
@@ -235,12 +330,11 @@ def get_current_metrics():
     }
 
 @tool
-def get_financial_summary():
+def get_financial_summary(startup_name:str):
     """Retrieve complete financial journey from onboarding to current state"""
-    startup_name = get_startup_name()
     onboarding = get_onboarding_data(startup_name)
     monthly_data = get_monthly_financial_data(startup_name)
-    current_cash, months_elapsed = calculate_current_cash()
+    current_cash, months_elapsed = calculate_current_cash(startup_name)
     
     summary = f"""FINANCIAL JOURNEY - {onboarding['startup_name']} ({onboarding['industry']})
 
@@ -288,9 +382,8 @@ CUSTOMER METRICS (Latest Month):
     return summary
 
 @tool
-def analyze_customer_churn():
+def analyze_customer_churn(startup_name:str):
     """Analyze customer churn patterns and retention metrics"""
-    startup_name = get_startup_name()
     onboarding = get_onboarding_data(startup_name)
     monthly_data = get_monthly_financial_data(startup_name)
     
@@ -351,9 +444,8 @@ MONTHLY BREAKDOWN:"""
     return analysis
 
 @tool
-def compute_burn_rate():
+def compute_burn_rate(startup_name:str):
     """Compute current burn rate and compare with initial projections"""
-    startup_name = get_startup_name()
     onboarding = get_onboarding_data(startup_name)
     monthly_data = get_monthly_financial_data(startup_name)
     
@@ -400,12 +492,11 @@ def compute_burn_rate():
 - Variance from plan: ₱{avg_actual_burn - planned_burn:+,.2f}/month ({((avg_actual_burn - planned_burn) / planned_burn * 100):+.1f}%){breakdown_text}"""
 
 @tool
-def compute_runway(simulated_expense=None, simulated_revenue=None):
+def compute_runway(startup_name:str, simulated_expense=None, simulated_revenue=None):
     """Compute current runway based on actual cash position and burn rate scenarios"""
-    startup_name = get_startup_name()
     onboarding = get_onboarding_data(startup_name)
     monthly_data = get_monthly_financial_data(startup_name)
-    current_cash, months_elapsed = calculate_current_cash()
+    current_cash, months_elapsed = calculate_current_cash(startup_name)
     
     if simulated_expense is not None or simulated_revenue is not None:
         # Use current metrics as baseline
@@ -459,12 +550,11 @@ def compute_runway(simulated_expense=None, simulated_revenue=None):
 ({len(recent_months)} month average){runway_status}"""
 
 @tool
-def compute_cac():
+def compute_cac(startup_name:str):
     """
     Compute the Customer Acquisition Cost (CAC) based on historical data.
     CAC = Total Marketing Expenses / New Customers Acquired (for a given period)
     """
-    startup_name = get_startup_name()
     onboarding = get_onboarding_data(startup_name)
     monthly_data = get_monthly_financial_data(startup_name)
 
@@ -523,11 +613,10 @@ def calculate_cac_helper(monthly_data, months=3):
     return recent_cac, recent_marketing, recent_new_customers
 
 @tool
-def compute_customer_ltv():
+def compute_customer_ltv(startup_name:str):
     """
     Compute Customer Lifetime Value (LTV) based on revenue and churn patterns
     """
-    startup_name = get_startup_name()
     onboarding = get_onboarding_data(startup_name)
     monthly_data = get_monthly_financial_data(startup_name)
     
@@ -600,16 +689,15 @@ HEALTH ASSESSMENT:"""
 
 import math
 @tool
-def analyze_hiring_affordability(role="developer", monthly_salary=None, num_hires=1):
+def analyze_hiring_affordability(startup_name:str,role="developer", monthly_salary=None, num_hires=1):
     """Analyze if startup can afford to hire new employee(s) by recalculating runway.
 
     """
-    startup_name = get_startup_name()
     if monthly_salary is None:
         raise ValueError(f"Monthly salary must be provided for {role} position.")
 
     monthly_data = get_monthly_financial_data(startup_name)
-    current_cash, _ = calculate_current_cash()
+    current_cash, _ = calculate_current_cash(startup_name)
     
     # Calculate current burn rate (3-month average if available)
     if monthly_data:
@@ -676,7 +764,7 @@ RUNWAY IMPACT:
     return analysis
 
 @tool
-def scenario_planning(revenue_change_pct=0, expense_change_pct=0, marketing_change_pct=0, marketing_change_amount=0, months_to_project=12):
+def scenario_planning(startup_name:str,revenue_change_pct=0, expense_change_pct=0, marketing_change_pct=0, marketing_change_amount=0, months_to_project=12):
     """Run scenario planning with revenue and expense changes. Perfect for 'what if' questions like:
     - 'What happens to runway if revenue drops by 20%?' → revenue_change_pct=-20
     - 'If we cut expenses by 15%?' → expense_change_pct=-15
@@ -685,7 +773,6 @@ def scenario_planning(revenue_change_pct=0, expense_change_pct=0, marketing_chan
 
     """
     metrics = get_current_metrics()
-    startup_name = get_startup_name()
     
     # Calculate scenario values
     current_revenue = metrics['avg_revenue']
@@ -922,7 +1009,7 @@ FUNDRAISING READINESS:"""
     return analysis
 
 @tool
-def marketing_scaling_analysis(cac_target=None, budget_increase_pct=0, efficiency_change_pct=0):
+def marketing_scaling_analysis(startup_name:str,cac_target=None, budget_increase_pct=0, efficiency_change_pct=0):
     """Analyze marketing scaling opportunities and CAC optimization
     
     Args:
@@ -930,7 +1017,6 @@ def marketing_scaling_analysis(cac_target=None, budget_increase_pct=0, efficienc
         budget_increase_pct: Percentage increase in marketing budget
         efficiency_change_pct: Percentage change in marketing efficiency (negative = worse, positive = better)
     """
-    startup_name = get_startup_name()
     onboarding = get_onboarding_data(startup_name)
     monthly_data = get_monthly_financial_data(startup_name)
     
@@ -1028,9 +1114,8 @@ SCALING ASSESSMENT:"""
     
     return analysis
 @tool
-def expense_optimization_analysis():
+def expense_optimization_analysis(startup_name:str):
     """Analyze expense categories and identify optimization opportunities"""
-    startup_name = get_startup_name()
     onboarding = get_onboarding_data(startup_name)
     monthly_data = get_monthly_financial_data(startup_name)
     
@@ -1116,13 +1201,12 @@ EXPENSE BREAKDOWN:
     return analysis
 
 @tool
-def analyze_churn_impact(hypothetical_monthly_churn_rate):
+def analyze_churn_impact(startup_name:str,hypothetical_monthly_churn_rate):
     """Analyze how a specific churn rate affects payback period, LTV, and unit economics.
     
     Args:
         hypothetical_monthly_churn_rate: Monthly churn rate as percentage (e.g., 5 for 5%)
     """
-    startup_name = get_startup_name()
     onboarding = get_onboarding_data(startup_name)
     monthly_data = get_monthly_financial_data(startup_name)
     
@@ -1201,13 +1285,12 @@ LTV changes significantly: at {hypothetical_monthly_churn_rate}% churn, each cus
 
 
 @tool
-def churn_scenario_comparison(churn_rates_list=[2, 5, 10, 15, 20]):
+def churn_scenario_comparison(startup_name:str,churn_rates_list=[2, 5, 10, 15, 20]):
     """Compare multiple churn rate scenarios side by side.
     
     Args:
         churn_rates_list: List of monthly churn rates to compare (as percentages)
     """
-    startup_name = get_startup_name()
     onboarding = get_onboarding_data(startup_name)
     monthly_data = get_monthly_financial_data(startup_name)
     
