@@ -371,6 +371,91 @@ async def get_cashflow_data():
         log_error("API_ERROR", f"Error in /cashflow: {str(e)}", {"endpoint": "/cashflow"})
         raise HTTPException(status_code=500, detail="Internal server error")
     
+@api.get("/revenue")
+async def get_revenue_data():
+    """
+    Revenue analysis including MRR growth, churn, ARPU, and NRR
+    """
+    try:
+        startup_name = get_startup_name()
+        if not startup_name:
+            raise HTTPException(status_code=400, detail="No startup context set")
+
+        onboarding = get_onboarding_data(startup_name)
+        monthly_data = get_monthly_financial_data(startup_name)
+
+        if not onboarding or not monthly_data:
+            raise HTTPException(status_code=404, detail="Insufficient data for revenue analysis")
+
+        churn_data = calculate_customer_churn(monthly_data, onboarding)
+        revenue_analysis = []
+
+        for i, month in enumerate(monthly_data):
+            # Growth
+            if i == 0:
+                mrr_growth_pct = 0
+                mrr_growth_amount = 0
+            else:
+                prev_revenue = monthly_data[i-1]['revenue']
+                mrr_growth_amount = month['revenue'] - prev_revenue
+                mrr_growth_pct = (mrr_growth_amount / prev_revenue * 100) if prev_revenue > 0 else 0
+
+            # Churn
+            month_churn = churn_data[i] if i < len(churn_data) else None
+            churn_rate = month_churn['churn_rate'] if month_churn else 0
+
+            # ARPU
+            arpu = month['revenue'] / month['active_customers'] if month['active_customers'] > 0 else 0
+
+            # NRR
+            if i == 0:
+                nrr = 100
+            else:
+                starting_customers = monthly_data[i-1]['active_customers']
+                if starting_customers > 0:
+                    new_customer_revenue = month['new_customers'] * arpu if month_churn else 0
+                    continuing_customer_revenue = month['revenue'] - new_customer_revenue
+                    prev_continuing_revenue = monthly_data[i-1]['revenue']
+                    nrr = (continuing_customer_revenue / prev_continuing_revenue * 100) if prev_continuing_revenue > 0 else 100
+                else:
+                    nrr = 100
+
+            revenue_analysis.append({
+                "month": month['date'].strftime('%Y-%m'),
+                "revenue": month['revenue'],
+                "mrr_growth_amount": mrr_growth_amount,
+                "mrr_growth_pct": mrr_growth_pct,
+                "churn_rate": churn_rate,
+                "arpu": arpu,
+                "nrr": nrr,
+                "active_customers": month['active_customers'],
+                "new_customers": month['new_customers']
+            })
+
+         # 3-month summary lang if ever need mo
+        recent_months = revenue_analysis[-3:] if len(revenue_analysis) >= 3 else revenue_analysis
+        avg_mrr_growth = sum(m['mrr_growth_pct'] for m in recent_months) / len(recent_months)
+        avg_churn = sum(m['churn_rate'] for m in recent_months) / len(recent_months)
+        avg_arpu = sum(m['arpu'] for m in recent_months) / len(recent_months)
+        avg_nrr = sum(m['nrr'] for m in recent_months) / len(recent_months)
+
+        return {
+            "data": revenue_analysis,
+            "summary": {
+                "avg_mrr_growth_pct": avg_mrr_growth,
+                "avg_churn_rate": avg_churn,
+                "avg_arpu": avg_arpu,
+                "avg_nrr": avg_nrr,
+                "total_months": len(revenue_analysis)
+            }
+        }
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        log_error("API_ERROR", f"Error in /revenue: {str(e)}", {"endpoint": "/revenue"})
+        raise HTTPException(status_code=500, detail="Internal server error")
+    
     
 
 if __name__ == "__main__":
