@@ -4,14 +4,14 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 from uuid import uuid4
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 import json
 from db import get_connection
 from core import app as chatbot_app
 from logger import log_error
 from langchain_core.messages import HumanMessage, AIMessage
 # Import the tools module to access startup context functions
-from tools import set_startup_context, get_startup_name
+from tools import set_startup_context, get_startup_name, get_onboarding_data,get_monthly_financial_data,calculate_customer_churn, calculate_current_cash, get_current_metrics
 
 # Initialize FastAPI app
 api = FastAPI(title="Chatbot API", description="Financial Advisor Chatbot API", version="1.0.0")
@@ -305,7 +305,73 @@ async def get_table_data(table_name: str, limit: int = 10):
             error_message=f"Error retrieving data: {str(e)}",
             context={"endpoint": "/db/table_name (GET)"},
         )
-        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")\
+
+@api.get("/cashflow")
+async def get_cashflow_data():
+    """
+    Monthly cash flow analysis
+    Returns: cash in (revenue), cash out (expenses), cash balance over time
+    """
+    try:
+        startup_name = get_startup_name()
+        if not startup_name:
+            raise HTTPException(status_code=400, detail="No startup name set")
+        
+        onboarding = get_onboarding_data(startup_name)
+        monthly_data = get_monthly_financial_data(startup_name)
+        
+        if not onboarding:
+            raise HTTPException(status_code=404, detail="No onboarding data found")
+        
+        cashflow_data = []
+        running_cash_balance = onboarding['initial_cash']
+        
+        # Initial month baseline
+        cashflow_data.append({
+            "month": onboarding['onboarding_date'].strftime('%Y-%m') if onboarding['onboarding_date'] else "Initial",
+            "cash_in": 0,
+            "cash_out": 0,
+            "cash_balance": running_cash_balance,
+            "net_flow": 0
+        })
+        
+        # Process monthly data
+        for month in monthly_data:
+            cash_in = month['revenue']
+            cash_out = (
+                month['product_dev_expenses'] +
+                month['manpower_expenses'] +
+                month['marketing_expenses'] +
+                month['operations_expenses'] +
+                month['other_expenses']
+            )
+            net_flow = cash_in - cash_out
+            running_cash_balance += net_flow
+            
+            cashflow_data.append({
+                "month": month['date'].strftime('%Y-%m'), # y-axis
+                "cash_in": cash_in,
+                "cash_out": cash_out,
+                "cash_balance": running_cash_balance, # x-axis
+                "net_flow": net_flow
+            })
+        return {
+            "data": cashflow_data,
+            "summary": {
+                "initial_cash": onboarding['initial_cash'],
+                "current_balance": running_cash_balance,
+                "total_months": len(cashflow_data) - 1
+            }
+        }
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        log_error("API_ERROR", f"Error in /cashflow: {str(e)}", {"endpoint": "/cashflow"})
+        raise HTTPException(status_code=500, detail="Internal server error")
+    
+    
 
 if __name__ == "__main__":
     import uvicorn
