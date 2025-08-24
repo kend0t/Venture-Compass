@@ -8,18 +8,22 @@ load_dotenv()
 def get_connection():
     """Establish and return a PostgreSQL connection with error logging"""
     try:
-        database_url = os.getenv("DATABASE_URL")
-        if not database_url:
-            raise ValueError("DATABASE_URL environment variable is not set")
-        
-        return psycopg2.connect(database_url)
+        return psycopg2.connect(
+            host=os.getenv("DB_HOST"),
+            port=os.getenv("DB_PORT"),
+            dbname=os.getenv("DB_NAME"),
+            user=os.getenv("DB_USERNAME"),
+            password=os.getenv("DB_PASSWORD")
+        )
     except Exception as e:
         log_error(
             error_type="DB_CONNECTION_ERROR",
             error_message=str(e),
             context={
                 "function": "get_connection",
-                "database_url_provided": bool(os.getenv("DATABASE_URL"))
+                "db_host": os.getenv("DB_HOST"),
+                "db_name": os.getenv("DB_NAME"),
+                "db_user": os.getenv("DB_USERNAME")
             }
         )
-        raise
+        raise  
