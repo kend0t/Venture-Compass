@@ -10,6 +10,8 @@ from db import get_connection
 from core import app as chatbot_app
 from logger import log_error
 from langchain_core.messages import HumanMessage, AIMessage
+# Import the tools module to access startup context functions
+from tools import set_startup_context, get_startup_name
 
 # Initialize FastAPI app
 api = FastAPI(title="Chatbot API", description="Financial Advisor Chatbot API", version="1.0.0")
@@ -19,11 +21,11 @@ api.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],  # Replace with your Next.js frontend URL
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
 
-# Models (keep existing models)
+# Updated Models
 class ChatMessage(BaseModel):
     role: str  # "user" or "assistant"
     content: str
@@ -32,6 +34,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     thread_id: Optional[str] = None  # will auto-generate if not given
+    startup_name: Optional[str] = None  # NEW: Accept startup_name in chat requests
 
 class ChatResponse(BaseModel):
     response: str
@@ -41,6 +44,14 @@ class ChatResponse(BaseModel):
 class ChatHistoryResponse(BaseModel):
     messages: List[ChatMessage]
     thread_id: str
+
+# NEW: Startup context models
+class StartupContextRequest(BaseModel):
+    startup_name: str
+
+class StartupContextResponse(BaseModel):
+    startup_name: str
+    message: str
 
 # Storage for sessions + history
 conversation_configs = {}
@@ -69,6 +80,41 @@ async def root():
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.now()}
 
+# NEW: Startup context management endpoints
+@api.post("/startup/context", response_model=StartupContextResponse)
+async def set_startup_context_endpoint(request: StartupContextRequest):
+    """Set the global startup context for all tools."""
+    try:
+        set_startup_context(request.startup_name)
+        return StartupContextResponse(
+            startup_name=request.startup_name,
+            message=f"Startup context set to: {request.startup_name}"
+        )
+    except Exception as e:
+        log_error(
+            error_type="CONTEXT_SET_ERROR",
+            error_message=f"Failed to set startup context: {str(e)}",
+            context={"endpoint": "/startup/context", "startup_name": request.startup_name}
+        )
+        raise HTTPException(status_code=500, detail="Failed to set startup context")
+
+@api.get("/startup/context")
+async def get_startup_context_endpoint():
+    """Get the current startup context."""
+    try:
+        current_startup = get_startup_name()
+        return {
+            "startup_name": current_startup,
+            "message": f"Current startup context: {current_startup or 'Not set'}"
+        }
+    except Exception as e:
+        log_error(
+            error_type="CONTEXT_GET_ERROR",
+            error_message=f"Failed to get startup context: {str(e)}",
+            context={"endpoint": "/startup/context (GET)"}
+        )
+        raise HTTPException(status_code=500, detail="Failed to get startup context")
+
 @api.post("/start-session")
 async def start_session():
     """Create a new chat session (thread_id)."""
@@ -91,6 +137,10 @@ async def chat_endpoint(request: ChatRequest):
     thread_id = request.thread_id or str(uuid4())
     
     try:
+        # NEW: Set startup context if provided
+        if request.startup_name:
+            set_startup_context(request.startup_name)
+            
         thread_config = get_thread_config(thread_id)
 
         # Enhance query based on keywords
@@ -130,6 +180,7 @@ async def chat_endpoint(request: ChatRequest):
             error_message=f"Error in chat endpoint: {str(e)}",
             context={
                 "user_message": request.message,
+                "startup_name": request.startup_name,
                 "endpoint": "/chat"
             },
             thread_id=thread_id
@@ -143,6 +194,10 @@ async def chat_stream_endpoint(request: ChatRequest):
         thread_id = request.thread_id or str(uuid4())
         
         try:
+            # NEW: Set startup context if provided
+            if request.startup_name:
+                set_startup_context(request.startup_name)
+                
             thread_config = get_thread_config(thread_id)
 
             enhanced_query = request.message
@@ -176,6 +231,7 @@ async def chat_stream_endpoint(request: ChatRequest):
                 error_message=f"Error in streaming endpoint: {str(e)}",
                 context={
                     "user_message": request.message,
+                    "startup_name": request.startup_name,
                     "endpoint": "/chat/stream"
                 },
                 thread_id=thread_id
@@ -250,6 +306,7 @@ async def get_table_data(table_name: str, limit: int = 10):
             context={"endpoint": "/db/table_name (GET)"},
         )
         raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(api, host="0.0.0.0", port=8000, reload=True)
