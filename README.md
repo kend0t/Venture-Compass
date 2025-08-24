@@ -1,4 +1,4 @@
-# Cashflow-Guardian
+# Venture Compass
 Repository for our BPI DataWave Product
 
 ### Setup Instructions
