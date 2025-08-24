@@ -26,6 +26,51 @@ llm = ChatGoogleGenerativeAI(
     google_api_key=google_api_key,
 )
 
+# Bank product recommendations
+bank_products = [
+    {
+        "name": "Ka-Negosyo SME Loan",
+        "description": "Supports the business in expanding product lines, purchasing new equipment, or meeting other capital expenditures.",
+        "tenor": "1–5 years",
+        "amount": "₱300,000 – ₱30,000,000",
+        "collateral": "Optional to provide real estate mortgage, deposit, or investment"
+    },
+    {
+        "name": "Ka-Negosyo Ready Loan",
+        "description": "Ideal for businesses with seasonal funding needs.",
+        "tenor": "3–6 months",
+        "amount": "₱300,000 – ₱3,000,000",
+        "collateral": "None"
+    },
+    {
+        "name": "Ka-Negosyo Credit Line",
+        "description": "Ideal for recurring business expenses such as inventory, employee salaries, utilities, equipment maintenance, and delivery costs.",
+        "tenor": "1 year (renewable)",
+        "amount": "₱1,000,000 – ₱30,000,000",
+        "collateral": "Optional"
+    },
+    {
+        "name": "Ka–Negosyo SME Loan for Property Acquisition",
+        "description": "Ideal for acquisition or construction of property assets for your business.",
+        "tenor": "1–10 years",
+        "amount": "₱1,000,000 – ₱30,000,000",
+        "collateral": "Real estate mortgage"
+    }
+]
+
+def recommend_bank_products(context: str):
+    """
+    Recommend Ka-Negosyo products if context overlaps with product descriptions.
+    """
+    context = context.lower()
+    recommendations = []
+
+    for product in bank_products:
+        if any(word in context for word in product["description"].lower().split()):
+            recommendations.append(product)
+
+    return recommendations
+
 def create_system_prompt(startup_name: str):
     """Create system prompt with startup context and explicit tool usage instructions"""
     return SystemMessage(content=f"""You are a financial advisor for startups/MSMEs. You are currently analyzing data for: {startup_name}
@@ -36,24 +81,31 @@ CRITICAL INSTRUCTIONS:
 - Never provide generic responses without using tools first
 - If a tool fails, explain what went wrong and ask for manual data
 
-AVAILABLE TOOLS:
-1. get_financial_summary(startup_name="{startup_name}") - Get complete financial overview
-2. calculate_runway_analysis(startup_name="{startup_name}") - Calculate runway and burn rate  
-3. test_startup_data(startup_name="{startup_name}") - Test if data exists for the startup
-
-TOOL USAGE RULES:
-- When user asks about runway → ALWAYS call calculate_runway_analysis("{startup_name}")
-- When user asks about finances → ALWAYS call get_financial_summary("{startup_name}")
-- If you're unsure if data exists → call test_startup_data("{startup_name}") first
-- ALWAYS pass the startup_name parameter: "{startup_name}"
 
 CORE RESPONSIBILITIES:
 - Calculate financial metrics accurately using tools provided
 - ALWAYS provide a detailed computation breakdown for each metric computed
-- If applicable, suggest 2-3 actionable improvements after showing calculations
+- Suggest a possible BPI product thatn the user can available
+- If applicable, make 2-3 more other suggestions to the user. Call this section "OTHER RECOMMENDATIONS"
+- When making other suggestions. Write the name of the suggestion at the start in bold followed by a colon
 - ALWAYS phrase suggestions as "You may want to consider", "You may want to explore"
 - Use available tools to demonstrate scenarios
 - Each segment of the response must have title in all caps and bold (e.g. **COMPUTATION BREAKDOWN**)
+
+FINANCIAL PRODUCT RECOMMENDATIONS:
+- If funding is needed, only recommend from the following products:
+  1. Ka-Negosyo SME Loan – For expansion, new equipment, or capital expenditures (₱300k–30M, 1–5 yrs, collateral optional)
+  2. Ka-Negosyo Ready Loan – For seasonal funding needs (₱300k–3M, 3–6 mos, no collateral)
+  3. Ka-Negosyo Credit Line – For recurring expenses like salaries, utilities, inventory, delivery costs (₱1M–30M, 1 yr renewable, collateral optional)
+  4. Ka-Negosyo SME Loan for Property Acquisition – For property acquisition or construction (₱1M–30M, 1–10 yrs, real estate collateral)
+- Trigger a product recommendation when:
+  * Runway is in a **risky position (6–12 months)** or **critical (<6 months)**
+  * The user mentions needing funding, working capital, or raising capital
+  * The user discusses property acquisition, seasonal needs, or recurring expenses
+- Choose only one product to recommend
+- Start with "Here are the recommended BPI products for your scenario:"
+- Do not invent other products. Only use these names.
+- Always explain WHY the chosen (only one) recommended product fit the scenario.
 
 RESPONSE PATTERN:
 1. Use appropriate tool to get data
@@ -61,6 +113,7 @@ RESPONSE PATTERN:
 3. Health assessment with clear status
 4. If financial products are needed, provide specific recommendations
 5. Make every section well-spaced
+6. DO NOT mention the tools you are using or you are trying to use
 
 Remember: You MUST use tools for any financial analysis. Never give generic responses about runway or cash flow without calling the tools first.""")
 
