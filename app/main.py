@@ -7,15 +7,13 @@ from datetime import datetime
 from uuid import uuid4
 from fastapi.responses import StreamingResponse, JSONResponse
 import json
-from tools import (
-    calculate_customer_churn, 
-    get_monthly_financial_data, 
-    get_onboarding_data, 
-)
+from tools import calculate_customer_churn, get_monthly_financial_data, get_monthly_financial_data_by_startup, get_onboarding_data, get_onboarding_data_by_startup
 from db import get_connection
 from core import create_chatbot_app
 from logger import log_error
 from langchain_core.messages import HumanMessage, AIMessage
+# Import the tools module to access startup context functions
+from tools import set_startup_context, get_startup_name, get_onboarding_data,get_monthly_financial_data,calculate_customer_churn, calculate_current_cash, get_current_metrics
 import psycopg2.extras
 
 # Initialize FastAPI app
@@ -51,6 +49,10 @@ class ChatHistoryResponse(BaseModel):
     thread_id: str
 
 class DashboardRequest(BaseModel):
+    startup_name: str
+
+# NEW: Startup context models
+class StartupContextRequest(BaseModel):
     startup_name: str
 
 # Storage for sessions + history (per thread_id)
@@ -534,3 +536,109 @@ def get_dashboard_overview(req: DashboardRequest):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(api, host="0.0.0.0", port=8000, reload=True)
+
+
+# endpoints for dashboard 
+@api.post("/db/overview")
+def get_dashboard_overview(req: DashboardRequest):
+    try:
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                retObj = {}
+
+                # current cash - FIXED: typo in column name and missing comma in tuple
+                cur.execute("SELECT initial_cash FROM onboarding_data WHERE startup_name = %s LIMIT 1;", (req.startup_name,))
+                rows = cur.fetchone()
+
+                current_cash = float(rows['initial_cash'])  # FIXED: was 'intital_cash'
+
+                # FIXED: Need to pass startup_name to get_monthly_financial_data
+                monthly_data = get_monthly_financial_data_by_startup(req.startup_name)
+    
+                for month in monthly_data:
+                    total_expenses = (month['product_dev_expenses'] + 
+                                    month['manpower_expenses'] + 
+                                    month['marketing_expenses'] + 
+                                    month['operations_expenses'] + 
+                                    month['other_expenses'])
+                    
+                    monthly_cash_flow = month['revenue'] - total_expenses
+                    current_cash += monthly_cash_flow
+
+                retObj['current_cash'] = current_cash
+
+                # monthly burn - FIXED: removed f-string and added missing comma
+                cur.execute("SELECT AVG(product_dev_expenses + manpower_expenses + operations_expenses + other_expenses + marketing_expenses) AS avg_monthly_burn FROM monthly_financial_data WHERE startup_name = %s;", (req.startup_name,))
+                rows = cur.fetchone()
+
+                retObj['monthly_burn'] = rows['avg_monthly_burn']
+
+                # mrr - FIXED: removed f-string and added missing comma
+                cur.execute("SELECT AVG(revenue) AS mrr FROM monthly_financial_data WHERE startup_name = %s;", (req.startup_name,))
+                rows = cur.fetchone()
+
+                retObj['mrr'] = rows['mrr']
+
+                # runway - FIXED: Handle case where net_burn might be negative or zero
+                recent_months = monthly_data[-3:] if len(monthly_data) >= 3 else monthly_data
+                if not recent_months:  # FIXED: Handle empty monthly_data
+                    retObj['runway'] = float('inf')
+                else:
+                    avg_revenue = sum(month['revenue'] for month in recent_months) / len(recent_months)
+                    avg_expenses = sum(month['product_dev_expenses'] + month['manpower_expenses'] + 
+                                    month['marketing_expenses'] + month['operations_expenses'] + month['other_expenses'] 
+                                    for month in recent_months) / len(recent_months)
+        
+                    net_burn = avg_expenses - avg_revenue
+                    
+                    # FIXED: Handle negative net_burn (profitable) or zero burn
+                    if net_burn <= 0:
+                        retObj['runway'] = float('inf')  # Company is profitable or breaking even
+                    else:
+                        runway = math.floor(current_cash / net_burn)
+                        retObj['runway'] = runway
+
+                # arr
+                retObj['arr'] = retObj['mrr'] * 12
+
+                # ltv:cac - FIXED: Need to pass startup_name to get_onboarding_data
+                onboarding = get_onboarding_data_by_startup(req.startup_name)
+                churn_data = calculate_customer_churn(monthly_data, onboarding)
+
+                # FIXED: Handle empty churn_data
+                if not churn_data:
+                    retObj['ltv'] = 0
+                    retObj['cac'] = 0
+                    retObj['payback_period'] = float('inf')
+                else:
+                    recent_churn_data = churn_data[-3:] if len(churn_data) >= 3 else churn_data
+                    avg_monthly_churn_rate = sum(month['churn_rate'] for month in recent_churn_data) / len(recent_churn_data) / 100
+                    avg_active_customers = sum(month['active_customers'] for month in recent_months) / len(recent_months)
+
+                    arpu = avg_revenue / avg_active_customers if avg_active_customers > 0 else 0
+
+                    customer_lifespan = (1 / avg_monthly_churn_rate) if avg_monthly_churn_rate > 0 else float('inf')
+                    ltv = arpu * customer_lifespan if customer_lifespan != float('inf') else float('inf')
+                    
+                    retObj['ltv'] = ltv
+
+                    # CAC calculation
+                    recent_marketing = sum(month['marketing_expenses'] for month in recent_months)
+                    recent_new_customers = sum(month['new_customers'] for month in recent_months)
+                    recent_cac = (recent_marketing / recent_new_customers) if recent_new_customers > 0 else float('inf')
+
+                    retObj['cac'] = recent_cac
+
+                    # payback period
+                    payback_period = (recent_cac / arpu) if arpu > 0 and recent_cac != float('inf') else float('inf')
+                    retObj['payback_period'] = payback_period
+
+                return retObj
+
+    except Exception as e:
+        log_error(
+            error_type="RETRIEVE_DATA_ERROR",
+            error_message=f"Error retrieving data: {str(e)}",
+            context={"endpoint": "/db/overview (POST)"},  # FIXED: endpoint description
+        )
+        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
