@@ -59,6 +59,63 @@ def get_onboarding_data():
         if cur: cur.close()
         if conn: conn.close()
 
+def get_onboarding_data_by_startup(startup_name: str):
+    """Helper function to retrieve initial financial data (baseline/expected cashflow)"""
+    conn, cur = None, None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        cur.execute(f"""
+            SELECT 
+                startup_name,
+                industry,
+                target_revenue,
+                product_dev_expenses AS planned_product_dev,
+                manpower_expenses AS planned_manpower,
+                marketing_expenses AS planned_marketing,
+                operations_expenses AS planned_operations,
+                initial_cash,
+                initial_customers,
+                current_employees,
+                target_runway_months,
+                onboarding_date
+            FROM onboarding_data
+            WHERE startup_name = %s
+            LIMIT 1
+        """, (startup_name,))
+        row = cur.fetchone()
+
+        if not row:
+            log_error("No onboarding_data found in DB")
+            return None
+
+        return {
+            "startup_name": row[0],
+            "industry": row[1],
+            "target_revenue": float(row[2]),
+            "planned_product_dev": float(row[3]),
+            "planned_manpower": float(row[4]),
+            "planned_marketing": float(row[5]),
+            "planned_operations": float(row[6]),
+            "initial_cash": float(row[7]),
+            "initial_customers": int(row[8]),
+            "current_employees": int(row[9]),
+            "target_runway_months": int(row[10]),
+            "onboarding_date": row[11]
+        }
+
+    except Exception as e:
+        log_error(
+        error_type="DB_ERROR",
+        error_message=f"Error in get_onboarding_data: {str(e)}",
+        context={"function": "get_onboarding_data"}
+    )
+        return None
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+
 
 
 
@@ -83,6 +140,62 @@ def get_monthly_financial_data():
             FROM monthly_financial_data
             ORDER BY date ASC
         """)
+        rows = cur.fetchall()
+
+        if not rows:
+            log_error("No monthly_financial_data found in DB")
+            return []
+
+        monthly_data = []
+        for row in rows:
+            monthly_data.append({
+                "date": row[0],
+                "revenue": float(row[1]),
+                "product_dev_expenses": float(row[2]),
+                "manpower_expenses": float(row[3]),
+                "marketing_expenses": float(row[4]),
+                "operations_expenses": float(row[5]),
+                "new_customers": int(row[6]),
+                "active_customers": int(row[7]),
+                "other_expenses": float(row[8])
+            })
+
+        return monthly_data
+
+    except Exception as e:
+        log_error(
+        error_type="DB_ERROR",
+        error_message=f"Error in get_monthly_financial_data: {str(e)}",
+        context={"function": "get_monthly_financial_data"}
+    )
+        return []
+
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+
+def get_monthly_financial_data_by_startup(startup_name: str):
+    """Helper function to retrieve monthly iterations of financial data"""
+    conn, cur = None, None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        cur.execute(f"""
+            SELECT 
+                date,
+                revenue,
+                product_dev_expenses,
+                manpower_expenses,
+                marketing_expenses,
+                operations_expenses,
+                new_customers,
+                active_customers,
+                other_expenses
+            FROM monthly_financial_data
+            WHERE startup_name = %s
+            ORDER BY date ASC
+        """, (startup_name,))
         rows = cur.fetchall()
 
         if not rows:
