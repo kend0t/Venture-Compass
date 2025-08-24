@@ -68,6 +68,7 @@ def get_onboarding_data(startup_name = None):
 
 def get_onboarding_data_by_startup(startup_name: str):
     """Helper function to retrieve initial financial data (baseline/expected cashflow)"""
+    print(f"DEBUG: get_montly_financial_data called with startup_name: {startup_name}")
     conn, cur = None, None
     try:
         conn = get_connection()
