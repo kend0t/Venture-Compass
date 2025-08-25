@@ -500,7 +500,7 @@ def compute_runway(startup_name:str, simulated_expense=None, simulated_revenue=N
     
     if simulated_expense is not None or simulated_revenue is not None:
         # Use current metrics as baseline
-        metrics = get_current_metrics()
+        metrics = get_current_metrics(startup_name)
         expense = simulated_expense if simulated_expense is not None else metrics['avg_expenses']
         revenue = simulated_revenue if simulated_revenue is not None else metrics['avg_revenue']
         net_burn = expense - revenue
@@ -772,7 +772,7 @@ def scenario_planning(startup_name:str,revenue_change_pct=0, expense_change_pct=
     - 'What if I cut marketing costs by ₱100,000?' → marketing_change_amount=-100000
 
     """
-    metrics = get_current_metrics()
+    metrics = get_current_metrics(startup_name)
     
     # Calculate scenario values
     current_revenue = metrics['avg_revenue']
@@ -930,7 +930,7 @@ CAC IMPACT ANALYSIS:"""
     return analysis
 
 @tool
-def fundraising_analysis(raise_amount=None, target_runway_months=18, current_valuation=None):
+def fundraising_analysis(raise_amount=None, target_runway_months=18, current_valuation=None, startup_name=None):
     """Analyze fundraising scenarios and requirements
     
     Args:
@@ -938,7 +938,7 @@ def fundraising_analysis(raise_amount=None, target_runway_months=18, current_val
         target_runway_months: Desired runway after fundraising
         current_valuation: Current company valuation for dilution calculation
     """
-    metrics = get_current_metrics()
+    metrics = get_current_metrics(startup_name)
     current_net_burn = metrics['avg_expenses'] - metrics['avg_revenue']
     
     if raise_amount is None:
@@ -1188,7 +1188,7 @@ EXPENSE BREAKDOWN:
         new_total = total_expenses - savings
         
         # Calculate runway impact
-        metrics = get_current_metrics()
+        metrics = get_current_metrics(startup_name)
         current_net_burn = metrics['avg_expenses'] - metrics['avg_revenue']
         new_net_burn = new_total - metrics['avg_revenue']
         
@@ -1333,6 +1333,237 @@ SCENARIOS:"""
     
     return analysis
 
+@tool
+def recommend_loan_amount_and_tenor(startup_name: str, product_name: str, funding_purpose: str = "general"):
+    """
+    Recommend specific loan amount and tenor based on startup's financial health, risk profile, and selected product.
+    
+    Args:
+        startup_name: Name of the startup
+        product_name: Selected loan product name
+        funding_purpose: Purpose of funding (expansion, working_capital, seasonal, property, emergency)
+    """
+    # Get financial data
+    onboarding = get_onboarding_data(startup_name)
+    monthly_data = get_monthly_financial_data(startup_name)
+    current_cash, months_elapsed = calculate_current_cash(startup_name)
+    current_metrics = get_current_metrics(startup_name)
+    
+    if not onboarding:
+        return "Unable to retrieve startup financial data for loan recommendation."
+    
+    # Calculate key risk metrics
+    current_runway = math.floor(current_cash / (current_metrics['avg_expenses'] - current_metrics['avg_revenue'])) if (current_metrics['avg_expenses'] - current_metrics['avg_revenue']) > 0 else float('inf')
+    monthly_revenue = current_metrics['avg_revenue']
+    monthly_expenses = current_metrics['avg_expenses']
+    net_burn = monthly_expenses - monthly_revenue
+    
+    # Determine risk profile
+    if current_runway >= 12:
+        risk_level = "LOW"
+        risk_multiplier = 1.0
+    elif current_runway >= 6:
+        risk_level = "MODERATE"
+        risk_multiplier = 0.8
+    elif current_runway >= 3:
+        risk_level = "HIGH"
+        risk_multiplier = 0.6
+    else:
+        risk_level = "CRITICAL"
+        risk_multiplier = 0.4
+    
+    # Define product constraints
+    product_limits = {
+        "Ka-Negosyo SME Loan": {"min": 300000, "max": 30000000, "min_tenor": 12, "max_tenor": 60},
+        "Ka-Negosyo Ready Loan": {"min": 300000, "max": 3000000, "min_tenor": 3, "max_tenor": 6},
+        "Ka-Negosyo Credit Line": {"min": 1000000, "max": 30000000, "min_tenor": 12, "max_tenor": 12},
+        "Ka-Negosyo SME Loan for Property Acquisition": {"min": 1000000, "max": 30000000, "min_tenor": 12, "max_tenor": 120}
+    }
+    
+    limits = product_limits.get(product_name, product_limits["Ka-Negosyo SME Loan"])
+    
+    # Calculate recommended loan amount based on purpose and financial capacity
+    if funding_purpose == "emergency" or current_runway < 3:
+        # Emergency funding: 3-6 months of net burn
+        base_amount = net_burn * 4 if net_burn > 0 else monthly_expenses * 3
+        calculation_explanation = f"Emergency funding = Net burn × 4 months = ₱{net_burn:,.2f} × 4"
+    elif funding_purpose == "working_capital":
+        # Working capital: 2-4 months of expenses
+        base_amount = monthly_expenses * 3
+        calculation_explanation = f"Working capital = Monthly expenses × 3 months = ₱{monthly_expenses:,.2f} × 3"
+    elif funding_purpose == "seasonal":
+        # Seasonal: 1-2 months of revenue opportunity
+        base_amount = monthly_revenue * 1.5
+        calculation_explanation = f"Seasonal funding = Monthly revenue × 1.5 months = ₱{monthly_revenue:,.2f} × 1.5"
+    elif funding_purpose == "expansion":
+        # Expansion: Based on revenue potential (3-6 months revenue)
+        base_amount = monthly_revenue * 4
+        calculation_explanation = f"Expansion funding = Monthly revenue × 4 months = ₱{monthly_revenue:,.2f} × 4"
+    elif funding_purpose == "property":
+        # Property: Higher amount, typically 60-80% of property value estimate
+        base_amount = monthly_revenue * 12  # Conservative estimate
+        calculation_explanation = f"Property funding = Monthly revenue × 12 months = ₱{monthly_revenue:,.2f} × 12"
+    else:
+        # General: 2-3 months of expenses
+        base_amount = monthly_expenses * 2.5
+        calculation_explanation = f"General funding = Monthly expenses × 2.5 months = ₱{monthly_expenses:,.2f} × 2.5"
+    
+    # Store values before adjustments for explanation
+    base_amount_calculated = base_amount
+    
+    # Apply risk adjustment
+    recommended_amount = base_amount * risk_multiplier
+    risk_adjusted_amount = recommended_amount
+    
+    # Ensure amount is within product limits
+    recommended_amount = max(limits["min"], min(recommended_amount, limits["max"]))
+    
+    # Calculate recommended tenor based on loan amount and repayment capacity
+    # Assume 30% of monthly revenue can go to loan repayment (conservative)
+    monthly_payment_capacity = monthly_revenue * 0.3
+    
+    if monthly_payment_capacity > 0:
+        # Calculate tenor needed to keep payments manageable
+        # Using simple calculation without interest for estimation
+        estimated_tenor = math.ceil(recommended_amount / monthly_payment_capacity)
+        
+        # Adjust based on risk level
+        if risk_level == "LOW":
+            tenor_adjustment = 1.0
+        elif risk_level == "MODERATE":
+            tenor_adjustment = 0.8  # Shorter tenor for moderate risk
+        elif risk_level == "HIGH":
+            tenor_adjustment = 0.6  # Much shorter tenor for high risk
+        else:  # CRITICAL
+            tenor_adjustment = 0.5  # Very short tenor for critical risk
+        
+        recommended_tenor = max(limits["min_tenor"], min(int(estimated_tenor * tenor_adjustment), limits["max_tenor"]))
+    else:
+        # If no payment capacity, recommend minimum tenor
+        estimated_tenor = limits["min_tenor"]
+        tenor_adjustment = 1.0
+        recommended_tenor = limits["min_tenor"]
+    
+    # Calculate estimated monthly payments (without interest rate)
+    estimated_monthly_payment = recommended_amount / recommended_tenor
+    
+    # Calculate debt service coverage ratio
+    dscr = monthly_payment_capacity / estimated_monthly_payment if estimated_monthly_payment > 0 else 0
+    
+    # Generate recommendation analysis with detailed computation
+    analysis = f"""LOAN AMOUNT & TENOR RECOMMENDATION - {product_name}
+
+**FINANCIAL RISK ASSESSMENT:**
+- Current runway: {current_runway if current_runway != float('inf') else '∞'} months
+- Risk level: {risk_level}
+- Monthly revenue: ₱{monthly_revenue:,.2f}
+- Monthly expenses: ₱{monthly_expenses:,.2f}
+- Net burn rate: ₱{net_burn:,.2f}/month
+- Current cash: ₱{current_cash:,.2f}
+
+**DETAILED COMPUTATION BREAKDOWN:**
+
+*Step 1: Base Loan Amount Calculation*
+- {calculation_explanation} = ₱{base_amount_calculated:,.2f}
+- Rationale: {funding_purpose.title()} funding requires covering the cash need for this specific purpose
+
+*Step 2: Risk Adjustment*
+- Risk level: {risk_level} (runway: {current_runway if current_runway != float('inf') else '∞'} months)
+- Risk multiplier: {risk_multiplier} ({"conservative" if risk_multiplier < 1.0 else "full"} amount due to {"high" if risk_multiplier < 0.8 else "moderate" if risk_multiplier < 1.0 else "low"} risk)
+- Risk-adjusted amount: ₱{base_amount_calculated:,.2f} × {risk_multiplier} = ₱{risk_adjusted_amount:,.2f}
+
+*Step 3: Product Constraints*
+- {product_name} limits: ₱{limits["min"]:,.0f} - ₱{limits["max"]:,.0f}
+- Final loan amount: ₱{recommended_amount:,.2f} {"(minimum enforced)" if recommended_amount == limits["min"] else "(maximum enforced)" if recommended_amount == limits["max"] else ""}
+
+*Step 4: Tenor Calculation*
+- Payment capacity: 30% of revenue = ₱{monthly_revenue:,.2f} × 0.30 = ₱{monthly_payment_capacity:,.2f}/month
+- Initial tenor: ₱{recommended_amount:,.2f} ÷ ₱{monthly_payment_capacity:,.2f} = {estimated_tenor:.0f} months
+- Risk adjustment: {risk_level} = {tenor_adjustment} multiplier = {estimated_tenor:.0f} × {tenor_adjustment} = {estimated_tenor * tenor_adjustment:.0f} months
+- Product limits: {limits["min_tenor"]}-{limits["max_tenor"]} months
+- Final tenor: {recommended_tenor} months
+
+*Step 5: Affordability Check*
+- Monthly payment: ₱{recommended_amount:,.2f} ÷ {recommended_tenor} = ₱{estimated_monthly_payment:,.2f}
+- DSCR: ₱{monthly_payment_capacity:,.2f} ÷ ₱{estimated_monthly_payment:,.2f} = {dscr:.2f}x
+
+**RECOMMENDED LOAN TERMS:**
+- **Recommended Amount: ₱{recommended_amount:,.2f}**
+- **Recommended Tenor: {recommended_tenor} months**
+- **Estimated monthly payment: ₱{estimated_monthly_payment:,.2f}**
+- **Payment capacity utilization: {(estimated_monthly_payment/monthly_payment_capacity*100) if monthly_payment_capacity > 0 else 0:.1f}%**
+
+**REPAYMENT ANALYSIS:**
+- Available payment capacity: ₱{monthly_payment_capacity:,.2f}/month (30% of revenue)
+- Required monthly payment: ₱{estimated_monthly_payment:,.2f}/month
+- Debt Service Coverage Ratio: {dscr:.2f}x
+- Total estimated cost: ₱{recommended_amount:,.2f} (principal only, rate varies by application)
+
+**AFFORDABILITY ASSESSMENT:**"""
+    
+    # DSCR-based affordability assessment
+    if dscr >= 2.0:
+        analysis += f"""
+✅ **HIGHLY AFFORDABLE**: DSCR of {dscr:.2f}x indicates very comfortable repayment ability
+- You can easily afford the monthly payments with significant buffer
+- Strong financial position supports this loan amount"""
+    elif dscr >= 1.5:
+        analysis += f"""
+👍 **AFFORDABLE**: DSCR of {dscr:.2f}x shows adequate repayment capacity
+- Monthly payments are manageable within your revenue
+- Reasonable financial commitment for your business"""
+    elif dscr >= 1.2:
+        analysis += f"""
+⚠️ **TIGHT BUT MANAGEABLE**: DSCR of {dscr:.2f}x requires careful cash flow management
+- Payments will consume most of your available payment capacity
+- Monitor cash flow closely and avoid additional debt"""
+    elif dscr >= 1.0:
+        analysis += f"""
+❌ **BARELY AFFORDABLE**: DSCR of {dscr:.2f}x indicates potential payment difficulty
+- Payments will strain your cash flow significantly
+- Consider smaller loan amount or focus on revenue growth first"""
+    else:
+        analysis += f"""
+🚨 **NOT AFFORDABLE**: DSCR of {dscr:.2f}x indicates you cannot afford these payments
+- Required payment (₱{estimated_monthly_payment:,.2f}) exceeds available capacity (₱{monthly_payment_capacity:,.2f})
+- **RECOMMENDATION**: Improve revenue or reduce expenses before taking this loan
+- Consider smaller amount or alternative financing options"""
+    
+    # Add purpose-specific insights
+    analysis += f"\n\n**PURPOSE-SPECIFIC INSIGHTS:**"
+    if funding_purpose == "expansion":
+        analysis += f"\n- Expansion funding should generate additional revenue to justify loan"
+        analysis += f"\n- Expected ROI should exceed loan cost to be profitable"
+        analysis += f"\n- Monitor new revenue streams closely"
+    elif funding_purpose == "working_capital":
+        analysis += f"\n- Working capital should improve cash flow cycle and reduce future funding needs"
+        analysis += f"\n- Focus on inventory turnover and receivables collection"
+        analysis += f"\n- Use funds to stabilize operations and improve efficiency"
+    elif funding_purpose == "seasonal":
+        analysis += f"\n- Seasonal funding should align with your peak revenue periods"
+        analysis += f"\n- Plan repayment during high-revenue months"
+        analysis += f"\n- Ensure seasonal uplift justifies the borrowing cost"
+    elif funding_purpose == "emergency":
+        analysis += f"\n- Emergency funding provides breathing room to stabilize operations"
+        analysis += f"\n- Use this time to improve underlying business metrics"
+        analysis += f"\n- Focus on revenue growth and cost optimization during loan period"
+    
+    analysis += f"\n\n**NEXT STEPS:**"
+    if dscr < 1.0:
+        analysis += f"\n1. **CRITICAL**: Do not proceed with this loan - payments are unaffordable"
+        analysis += f"\n2. Focus on increasing revenue or reducing expenses first"
+        analysis += f"\n3. Consider smaller loan amounts or alternative financing"
+        analysis += f"\n4. Revisit loan application after improving financial metrics"
+    else:
+        analysis += f"\n1. Submit loan application with these recommended terms as starting point"
+        analysis += f"\n2. Prepare comprehensive financial statements and business plan"
+        analysis += f"\n3. Consider collateral options if applicable to improve terms"
+        analysis += f"\n4. Discuss actual interest rates and final terms with BPI relationship manager"
+    
+    analysis += f"\n\n*Note: Final loan terms subject to bank approval and creditworthiness assessment. Interest rates vary based on risk profile and market conditions.*"
+    
+    return analysis
+
 # Add the new tools to the tools list
 tools = [
     get_financial_summary, 
@@ -1347,5 +1578,6 @@ tools = [
     marketing_scaling_analysis,
     expense_optimization_analysis,
     analyze_churn_impact,
-    churn_scenario_comparison
+    churn_scenario_comparison,
+    recommend_loan_amount_and_tenor
 ]
