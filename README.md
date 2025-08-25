@@ -1,5 +1,5 @@
 # Venture Compass
-Repository for our BPI DataWave Product
+Repository for the backend code our BPI DataWave Product
 
             
             
