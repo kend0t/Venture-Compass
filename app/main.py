@@ -261,7 +261,7 @@ async def clear_chat_history(thread_id: str):
         )
         raise HTTPException(status_code=500, detail=f"Error clearing history: {str(e)}")
 
-@api.post("/db/cashflow/{startup_name}")
+@api.post("/db/cashflow")
 async def get_cashflow_data(req: DashboardRequest):
     """
     Monthly cash flow analysis for a specific startup
@@ -321,7 +321,7 @@ async def get_cashflow_data(req: DashboardRequest):
         log_error("API_ERROR", f"Error in /cashflow: {str(e)}", {"endpoint": "/cashflow"})
         raise HTTPException(status_code=500, detail="Internal server error")
     
-@api.post("/db/revenue/{startup_name}")
+@api.post("/db/revenue")
 async def get_revenue_data(req: DashboardRequest):
     """
     Revenue analysis including MRR growth, churn, ARPU, and NRR for a specific startup
@@ -510,7 +510,7 @@ def get_dashboard_overview(req: DashboardRequest):
         )
         raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
     
-@api.post("/db/expenses/{startup_name}")
+@api.post("/db/expenses")
 async def get_expenses_data(req: DashboardRequest):
     """
     Expense breakdown showing each category as percentage of total
@@ -579,7 +579,7 @@ async def get_expenses_data(req: DashboardRequest):
         log_error("API_ERROR", f"Error in /api/expenses: {str(e)}", {"endpoint": "/api/expenses"})
         raise HTTPException(status_code=500, detail="Internal server error")
     
-@api.post("/db/runway/{startup_name}")
+@api.post("/db/runway")
 async def get_runway_data(req: DashboardRequest):
     """
     Runway projections with current, optimistic, and pessimistic scenarios
